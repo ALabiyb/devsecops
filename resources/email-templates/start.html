@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+        .content {
+            padding: 30px;
+            line-height: 1.6;
+        }
+        .info-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            background-color: #f9f9f9;
+            border-radius: 5px;
+            overflow: hidden;
+        }
+        .info-table td {
+            padding: 12px 15px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        .info-table td:first-child {
+            font-weight: bold;
+            background-color: #f0f0f0;
+            width: 150px;
+        }
+        .git-section {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+            border-left: 4px solid #28a745;
+        }
+        .button {
+            display: inline-block;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px 25px;
+            text-decoration: none;
+            border-radius: 5px;
+            font-weight: bold;
+            margin: 20px 0;
+        }
+        .footer {
+            background-color: #f8f9fa;
+            padding: 20px;
+            text-align: center;
+            font-size: 0.9em;
+            color: #666;
+            border-top: 1px solid #e0e0e0;
+        }
+        .status-started {
+            color: #007bff;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>🚀 Pipeline Started</h1>
+        <p>Jenkins Build Notification</p>
+    </div>
+
+    <div class="content">
+        <p>Hello!</p>
+        <p>A new Jenkins pipeline has been <span class="status-started">started</span>. Here are the details:</p>
+
+        <table class="info-table">
+            <tr>
+                <td>Job Name</td>
+                <td>{{JOB_NAME}}</td>
+            </tr>
+            <tr>
+                <td>Build Number</td>
+                <td>#{{BUILD_NUMBER}}</td>
+            </tr>
+            <tr>
+                <td>Branch</td>
+                <td>{{BRANCH}}</td>
+            </tr>
+            <tr>
+                <td>Triggered By</td>
+                <td>{{TRIGGERED_BY}}</td>
+            </tr>
+            <tr>
+                <td>Build Status</td>
+                <td><span class="status-started">STARTED</span></td>
+            </tr>
+        </table>
+
+        <div class="git-section">
+            <h3>📝 Git Information</h3>
+            <p><strong>Author:</strong> {{GIT_AUTHOR}}</p>
+            <p><strong>Commit Message:</strong> {{GIT_COMMIT}}</p>
+            <p><strong>Commit Hash:</strong> <code>{{GIT_HASH}}</code></p>
+        </div>
+
+        <p>You can monitor the build progress using the link below:</p>
+        <a href="{{BUILD_URL}}" class="button">View Build Details</a>
+
+        <p>The pipeline will send another notification once completed.</p>
+    </div>
+
+    <div class="footer">
+        <p>This notification was sent automatically by Jenkins CI/CD.</p>
+        <p>If you have questions, please contact the DevOps team.</p>
+    </div>
+</div>
+</body>
+</html>
