@@ -33,16 +33,16 @@ def call(Map params = [:]) {
         }
 
         // Optional Slack
-        if (env.SLACK_CHANNEL) {
-            slackSend(
-                    channel: env.SLACK_CHANNEL,
-                    color: 'good',
-                    message: """${subject}
-Commit: ${data.GIT_COMMIT}
-Author: ${data.GIT_AUTHOR} (${data.GIT_AUTHOR_EMAIL})
-<${env.BUILD_URL}|View Build>"""
-            )
-        }
+//        if (env.SLACK_CHANNEL) {
+//            slackSend(
+//                    channel: env.SLACK_CHANNEL,
+//                    color: 'good',
+//                    message: """${subject}
+//Commit: ${data.GIT_COMMIT}
+//Author: ${data.GIT_AUTHOR} (${data.GIT_AUTHOR_EMAIL})
+//<${env.BUILD_URL}|View Build>"""
+//            )
+//        }
 
         echo "✅ Start notification sent"
     } catch (e) {
