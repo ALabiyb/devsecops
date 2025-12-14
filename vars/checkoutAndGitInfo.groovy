@@ -18,7 +18,7 @@ def call(Map params = [:]) {
         sh 'git status'  // Debug: confirm git repo is active
 
         // Capture commit message safely
-        def commitMessage = sh(script: 'git log -1 --pretty=%B | head -1', returnStdout: true)?.trim()
+        def commitMessage = sh(script: 'git log -1 --pretty=%s | head -1', returnStdout: true)?.trim()
         if (!commitMessage || commitMessage.isEmpty()) {
             commitMessage = 'No commit message available'
         }
