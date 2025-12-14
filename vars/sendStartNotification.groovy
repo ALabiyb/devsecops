@@ -11,7 +11,7 @@ def call(Map params = [:]) {
                 BUILD_URL          : env.BUILD_URL,
                 BRANCH             : env.BRANCH_NAME,
                 TRIGGERED_BY       : params.triggeredBy ?: 'Unknown',
-                GIT_COMMIT         : env.GIT_COMMIT,
+                GIT_COMMIT_MESSAGE : env.GIT_COMMIT,
                 GIT_AUTHOR         : env.GIT_AUTHOR,
                 GIT_AUTHOR_USERNAME: env.GIT_AUTHOR_USERNAME,
                 GIT_AUTHOR_EMAIL   : env.GIT_AUTHOR_EMAIL,
@@ -71,11 +71,14 @@ private String getTemplate(Map data) {
                 <p>Jenkins Build #${data.BUILD_NUMBER}</p>
             </div>
             <div class="content">
-                <p>Hello <strong>${data.GIT_AUTHOR}</strong>!</p>
+                <p>Hello <strong>Team</strong>!</p>
                 <p>A new build has been triggered for your commit:</p>
                 
                 <div class="info">
-                    <p><strong>Commit:</strong> ${data.GIT_COMMIT}</p>
+                    <p><strong>Commit Message:</strong></p>
+                    <blockquote style="margin: 10px 0; padding: 10px 20px; background: #f0f8ff; border-left: 4px solid #007bff; font-style: italic;">
+                    ${data.GIT_COMMIT_MESSAGE}
+                    </blockquote>
                     <p><strong>Author:</strong> ${data.GIT_AUTHOR} (${data.GIT_AUTHOR_USERNAME})</p>
                     <p><strong>Email:</strong> <a href="mailto:${data.GIT_AUTHOR_EMAIL}">${data.GIT_AUTHOR_EMAIL}</a></p>
                     <p><strong>Branch:</strong> ${data.BRANCH}</p>
