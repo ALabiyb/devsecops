@@ -17,12 +17,12 @@ def call(Map params = [:]) {
         // Critical: Ensure we're in the right directory and git is working
         sh 'git status'  // Debug: confirm git repo is active
 
-        // Capture commit message safely
-        def commitMessage = sh(script: 'git log -1 --pretty=%s | head -1', returnStdout: true)?.trim()
-        if (!commitMessage || commitMessage.isEmpty()) {
+        // Capture commit message safely into a separate variable (avoid overwriting Jenkins' GIT_COMMIT)
+        def commitMessage = sh(script: "git show -s --format=%B HEAD | head -n 1", returnStdout: true)?.trim()
+        if (!commitMessage) {
             commitMessage = 'No commit message available'
         }
-        env.GIT_COMMIT = commitMessage
+        env.GIT_COMMIT_MESSAGE = commitMessage
 
         // Author info
         env.GIT_AUTHOR = sh(script: 'git log -1 --pretty=%an', returnStdout: true)?.trim() ?: 'Unknown author'
@@ -37,13 +37,13 @@ def call(Map params = [:]) {
         env.GIT_COMMIT_DATE = sh(script: 'git log -1 --pretty=%cd --date=iso', returnStdout: true)?.trim() ?: 'unknown'
 
         echo "Git Info Captured:"
-        echo "  Message: ${env.GIT_COMMIT}"
+        echo "  Message: ${env.GIT_COMMIT_MESSAGE}"
         echo "  Author: ${env.GIT_AUTHOR} (${env.GIT_AUTHOR_USERNAME} <${env.GIT_AUTHOR_EMAIL}>)"
         echo "  Hash: ${env.GIT_COMMIT_HASH}"
         echo "  Date: ${env.GIT_COMMIT_DATE}"
 
         return [
-                commitMessage: env.GIT_COMMIT,
+                commitMessage: env.GIT_COMMIT_MESSAGE,
                 author: env.GIT_AUTHOR,
                 authorEmail: env.GIT_AUTHOR_EMAIL,
                 authorUsername: env.GIT_AUTHOR_USERNAME,
