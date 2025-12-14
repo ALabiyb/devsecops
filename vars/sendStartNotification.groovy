@@ -11,7 +11,7 @@ def call(Map params = [:]) {
                 BUILD_URL          : env.BUILD_URL,
                 BRANCH             : env.BRANCH_NAME,
                 TRIGGERED_BY       : params.triggeredBy ?: 'Unknown',
-                GIT_COMMIT_MESSAGE : env.GIT_COMMIT,
+                GIT_COMMIT_MESSAGE : env.GIT_COMMIT_MESSAGE,
                 GIT_AUTHOR         : env.GIT_AUTHOR,
                 GIT_AUTHOR_USERNAME: env.GIT_AUTHOR_USERNAME,
                 GIT_AUTHOR_EMAIL   : env.GIT_AUTHOR_EMAIL,
