@@ -18,10 +18,9 @@ def call(Map params = [:]) {
                 "Trivy Scan": {
                     sh params.trivyCmd ?: "bash trivy-docker-image-scan.sh"
                 },
-                // Uncomment when ready
-                // "OPA Conftest": {
-                //     sh params.opaCmd ?: "docker run --rm -v \$(pwd):/project openpolicyagent/conftest test --policy opa-docker-security.rego Dockerfile || true"
-                // }
+                 "OPA Conftest": {
+                     sh params.opaCmd ?: "docker run --rm -v \$(pwd):/project openpolicyagent/conftest test --policy opa-docker-security.rego Dockerfile"
+                 }
         )
 
 //        sh params.dependencyCmd ?: "mvn dependency-check:check || true"
