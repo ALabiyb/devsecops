@@ -16,7 +16,7 @@ def call(Map params = [:]) {
                 GIT_AUTHOR_EMAIL    : env.GIT_AUTHOR_EMAIL ?: 'unknown@example.com',
                 GIT_COMMIT_DATE     : env.GIT_COMMIT_DATE ?: 'unknown',
                 FAILED_STAGE        : env.failedStage ?: 'Unknown Stage',
-                FAILURE_ERROR       : env.failureError ?: 'No error message captured'
+                FAILURE_ERROR       : env.failureReason ?: 'No error message captured'
         ]
         def data = defaultData + (params.data ?: [:])
 
