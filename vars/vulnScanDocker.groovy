@@ -14,7 +14,7 @@ def call(Map params = [:]) {
         }
 //        sh params.dependencyCmd ?: "mvn dependency-check:check || true"
         return [success: true]
-    } catch (e) {
+    } catch (Exception e) {
         env.failedStage = "Vulnerability Scan - Docker"
         env.failedReason = e.getMessage()
         echo "Docker vulnerability scanning error: ${e}"
