@@ -7,7 +7,7 @@ def call(Map params = [:]) {
         def projectKey = params.projectKey ?: env.JOB_NAME
         def projectName = params.projectName ?: env.JOB_NAME
 
-        withSonarQubeEnv(SonarQube Server) {
+        withSonarQubeEnv("SonarQube Server") {
             def sonarCmd = params.command ?: "mvn clean verify sonar:sonar " +
                     "-Dsonar.projectKey=${projectKey} " +
                     "-Dsonar.projectName=\"${projectName}\" " +
