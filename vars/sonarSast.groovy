@@ -7,19 +7,23 @@ def call(Map params = [:]) {
         def projectKey = params.projectKey ?: env.JOB_NAME
         def projectName = params.projectName ?: env.JOB_NAME
 
-        withSonarQubeEnv("SonarQube Server") {
-            def sonarCmd = params.command ?: "mvn clean verify sonar:sonar " +
-                    "-Dsonar.projectKey=${projectKey} " +
-                    "-Dsonar.projectName=\"${projectName}\" "
-
-            // For debugging, you can echo what's being set
-//            echo "SonarQube Server: ${sonarServer}"
-//            echo "Project Key: ${projectKey}"
-//            echo "Project Name: ${projectName}"
-
-            sh sonarCmd
+//        withSonarQubeEnv("SonarQube Server") {
+//            def sonarCmd = params.command ?: "mvn clean verify sonar:sonar " +
+//                    "-Dsonar.projectKey=${projectKey} " +
+//                    "-Dsonar.projectName=\"${projectName}\""
+//
+//            // For debugging, you can echo what's being set
+////            echo "SonarQube Server: ${sonarServer}"
+////            echo "Project Key: ${projectKey}"
+////            echo "Project Name: ${projectName}"
+//
+//            sh sonarCmd
+//        }
+        withSonarQubeEnv(sonarServer) {
+            sh 'mvn clean verify sonar:sonar ' +
+               "-Dsonar.projectKey=${projectKey} " +
+               "-Dsonar.projectName=${projectName}"
         }
-
         echo "✅ SonarQube analysis passed!"
         return [success: true]
 
