@@ -13,9 +13,9 @@ def call(Map params = [:]) {
                     "-Dsonar.projectName=\"${projectName}\" " +
 
             // For debugging, you can echo what's being set
-            echo "SonarQube Server: ${sonarServer}"
-            echo "Project Key: ${projectKey}"
-            echo "Project Name: ${projectName}"
+//            echo "SonarQube Server: ${sonarServer}"
+//            echo "Project Key: ${projectKey}"
+//            echo "Project Name: ${projectName}"
 
             sh sonarCmd
         }
