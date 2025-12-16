@@ -6,11 +6,27 @@ def call(Map params = [:]) {
         def sonarServer = params.sonarServer ?: 'SonarQube Server'
         def projectKey   = params.projectKey   ?: env.JOB_NAME
         def projectName  = params.projectName  ?: env.JOB_NAME
+        def waitForQGate = params.waitForQualityGate ?: false
+        def timeoutMinutes = params.timeoutMinutes ?: 5
 
+
+        //Step 1: Run the SonarQube analysis using Maven
         withSonarQubeEnv(sonarServer) {
             sh """mvn sonar:sonar \
                 -Dsonar.projectKey=${projectKey} \
                 -Dsonar.projectName="${projectName}" """
+        }
+
+        //Step 2: Wait for Quality Gate result
+        if (waitForQGate) {
+            echo "Waiting for SonarQube Quality Gate result..."
+            timeout(time: timeoutMinutes, unit: 'MINUTES') {
+                def qg = waitForQualityGate()
+                if (qg.status != 'OK') {
+                    error "SonarQube Quality Gate failed: ${qg.status}"
+                }
+            }
+            echo "SonarQube Quality Gate passed."
         }
 
         echo "✅ SonarQube analysis completed and uploaded successfully!"
@@ -18,7 +34,7 @@ def call(Map params = [:]) {
 
     } catch (Exception e) {
         env.failedStage = "SonarQube - SAST"
-        echo "❌ SonarQube analysis failed: ${e.message}"
+        echo "❌ SonarQube analysis or Quality Gate failed: ${e.message}"
         currentBuild.result = 'FAILURE'
         throw e
     }
