@@ -34,6 +34,7 @@ def call(Map params = [:]) {
 
     } catch (Exception e) {
         env.failedStage = "SonarQube - SAST"
+        env.failedReason = e.getMessage()
         echo "❌ SonarQube analysis or Quality Gate failed: ${e.message}"
         currentBuild.result = 'FAILURE'
         throw e

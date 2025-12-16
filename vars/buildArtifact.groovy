@@ -39,6 +39,7 @@ def call(Map params = [:]) {
 
     } catch (Exception e) {
         env.failedStage = "Build Artifact (${buildTool ?: 'unknown'})"
+        env.failedReason = e.getMessage()
         echo "Build failed for tool '${buildTool}': ${e.getMessage()}"
         currentBuild.result = 'FAILURE'
         throw e

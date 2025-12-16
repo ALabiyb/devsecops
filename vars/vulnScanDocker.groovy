@@ -16,6 +16,7 @@ def call(Map params = [:]) {
         return [success: true]
     } catch (e) {
         env.failedStage = "Vulnerability Scan - Docker"
+        env.failedReason = e.getMessage()
         echo "Docker vulnerability scanning error: ${e}"
         currentBuild.result = 'UNSTABLE'
         throw e

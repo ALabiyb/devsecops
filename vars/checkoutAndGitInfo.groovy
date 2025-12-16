@@ -50,8 +50,9 @@ def call(Map params = [:]) {
                 hash: env.GIT_COMMIT_HASH
         ]
 
-    } catch (e) {
+    } catch (Exception e) {
         env.failedStage = params.stageName ?: "Checkout and Git Info"
+        env.failedReason = e.getMessage()
         currentBuild.result = 'FAILURE'
         echo "Error during checkout or Git info retrieval: ${e.getMessage()}"
         throw e
