@@ -19,11 +19,12 @@ def call(Map params = [:]) {
                     sh params.trivyCmd ?: "bash trivy-docker-image-scan.sh"
                 },
                  "OPA Conftest": {
-                     sh params.opaCmd ?: "docker run --rm openpolicyagent/conftest test --policy opa-docker-security.rego Dockerfile"
+                     sh params.opaCmd ?: "docker run --rm -v \$(pwd):/project openpolicyagent/conftest test --policy opa-docker-security.rego Dockerfile"
                  }
         )
 
 //        sh params.dependencyCmd ?: "mvn dependency-check:check || true"
+        echo "✅ All vulnerability scans completed."
         return [success: true]
     } catch (Exception e) {
         env.failedStage = "Vulnerability Scan - Docker"
