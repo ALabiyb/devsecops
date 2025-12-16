@@ -14,12 +14,18 @@ def call(Map params = [:]) {
 //                "-Dsonar.projectName=\"${projectName}\" " +
 //                "-Dsonar.host.url=${SONAR_HOST_URL} " +
 //                "-Dsonar.login=${SONAR_AUTH_TOKEN}"
-
-        withSonarQubeEnv(sonarServer) {
-            sh params.command ?: "mvn sonar:sonar " +
+// Default Maven command (can be overridden)
+        withSonarQubeEnv(SonarQube Server) {
+            def sonarCmd = params.command ?: "mvn clean verify sonar:sonar " +
                     "-Dsonar.projectKey=${projectKey} " +
-                    "-Dsonar.projectName=\"${projectName}\" "
+                    "-Dsonar.projectName=\"${projectName}\" " +
+            sh sonarCmd
         }
+//        withSonarQubeEnv(sonarServer) {
+//            sh params.command ?: "mvn sonar:sonar " +
+//                    "-Dsonar.projectKey=${projectKey} " +
+//                    "-Dsonar.projectName=\"${projectName}\" "
+//        }
 
 //        echo "Waiting for SonarQube Quality Gate..."
 //        timeout(time: timeoutMinutes, unit: 'MINUTES') {
