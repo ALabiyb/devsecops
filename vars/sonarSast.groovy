@@ -10,7 +10,7 @@ def call(Map params = [:]) {
         withSonarQubeEnv("SonarQube Server") {
             def sonarCmd = params.command ?: "mvn clean verify sonar:sonar " +
                     "-Dsonar.projectKey=${projectKey} " +
-                    "-Dsonar.projectName=\"${projectName}\" " +
+                    "-Dsonar.projectName=\"${projectName}\" "
 
             // For debugging, you can echo what's being set
 //            echo "SonarQube Server: ${sonarServer}"
