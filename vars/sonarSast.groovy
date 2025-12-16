@@ -20,10 +20,11 @@ def call(Map params = [:]) {
 //            sh sonarCmd
 //        }
         withSonarQubeEnv(sonarServer) {
-            sh 'mvn clean verify sonar:sonar ' +
+            sh 'mvn sonar:sonar ' +
                "-Dsonar.projectKey=${projectKey} " +
                "-Dsonar.projectName=${projectName}"
         }
+
         echo "✅ SonarQube analysis passed!"
         return [success: true]
 
