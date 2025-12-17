@@ -15,12 +15,12 @@ def call(Map params = [:]) {
                         """
                     }
                 },
-                "Trivy Scan": {
+                "Trivy Scan - Base Image": {
                     sh params.trivyCmd ?: "bash trivy-docker-image-scan.sh"
                 },
-                 "OPA Conftest": {
+                 "OPA Conftest - Dockerfile": {
                      sh """
-                         docker run --rm -v "\$(pwd)":/project openpolicyagent/conftest test --policy opa-docker-security.rego Dockerfile
+                         docker run --rm -v "\$(pwd)":/project openpolicyagent/conftest test --input dockerfile.v1 Dockerfile --policy opa-docker-security.rego
                      """
                  }
         )
