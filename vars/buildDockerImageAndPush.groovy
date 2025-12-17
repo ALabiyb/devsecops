@@ -74,7 +74,7 @@ def call(Map params = [:]) {
         // Remove local image after push if required
         if (removeAfterPush) {
             echo "🧹 Removing local Docker image..."
-            sh "docker rmi ${localImageName} || true"
+            sh "docker rmi ${registryImageName} || true"
         }
 
         echo "✅ Docker image build and push process completed."
