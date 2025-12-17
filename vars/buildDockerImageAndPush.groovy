@@ -3,6 +3,7 @@ def call(Map params = [:]) {
     def projectName = params.projectName ?: env.JOB_NAME
     def imageName = params.imageName ?: env.JOB_NAME?.toLowerCase()?.replaceAll(/[^a-z0-9\-_.]/, '-')
     def imageTag = params.imageTag ?: env.BUILD_NUMBER ?: 'latest'
+    def harborProject = params.harborProject ?: ''
     def registryUrl = params.registryUrl ?: ''
     def registryCredentialsId = params.registryCredentialsId ?: ''
     def dockerfilePath = params.dockerfilePath ?: 'Dockerfile'
@@ -16,11 +17,13 @@ def call(Map params = [:]) {
     echo "Project Name: ${projectName}"
     echo "Image Name: ${imageName}"
     echo "Image Tag: ${imageTag}"
+    echo "Harbor Project: ${harborProject}"
     echo "Registry URL: ${registryUrl}"
     echo "Push to Registry: ${pushToRegistry}"
 
     def localImageName = "${imageName}:${imageTag}"
-    def registryImageName = registryUrl ? "${registryUrl}/${imageName}:${imageTag}" : localImageName
+    def registryImageName = registryUrl ? "${registryUrl}/${harborProject}/${imageName}:${imageTag}" : localImageName
+    echo "Registry Image Name: ${registryImageName}"
 
     try {
         // Validate Dockerfile existence
