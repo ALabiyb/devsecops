@@ -21,7 +21,7 @@ def call(Map params = [:]) {
         // Blocking scan: fail only on CRITICAL
         sh """
             docker run --rm \
-                -v /var/run/docker.sock:/var/run/docker.sock
+                -v /var/run/docker.sock:/var/run/docker.sock \
                 aquasec/trivy:latest \
                 image --quiet --no-progress \
                 --exit-code 1 \
