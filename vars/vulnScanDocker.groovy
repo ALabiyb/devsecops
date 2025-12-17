@@ -20,7 +20,7 @@ def call(Map params = [:]) {
                 },
                  "OPA Conftest - Dockerfile": {
                      sh """
-                         docker run --rm -v "\$(pwd)":/project openpolicyagent/conftest test --input dockerfile.v1 Dockerfile --policy opa-docker-security.rego
+                         docker run --rm -v "\$(pwd)":/project openpolicyagent/conftest test  --policy opa-docker-security.rego Dockerfile
                      """
                  }
         )
