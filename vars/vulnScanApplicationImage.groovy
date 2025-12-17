@@ -11,8 +11,6 @@ def call(Map params = [:]) {
         // Informational scan: show HIGH and CRITICAL
         sh """
             docker run --rm \
-                -v /var/run/docker.sock:/var/run/docker.sock \
-                -v \$WORKSPACE:/root/.cache/ \
                 aquasec/trivy:latest \
                 image --quiet --no-progress \
                 --severity HIGH,CRITICAL \
@@ -22,8 +20,6 @@ def call(Map params = [:]) {
         // Blocking scan: fail only on CRITICAL
         sh """
             docker run --rm \
-                -v /var/run/docker.sock:/var/run/docker.sock \
-                -v \$WORKSPACE:/root/.cache/ \
                 aquasec/trivy:latest \
                 image --quiet --no-progress \
                 --exit-code 1 \
@@ -37,7 +33,7 @@ def call(Map params = [:]) {
     } catch (Exception e) {
         echo "❌ Vulnerability scan failed: ${e.message}"
         currentBuild.result = 'UNSTABLE'
-        env.failedStage = "Build Docker Image and Push"
+        env.failedStage = "Vulnerability Scan - Application Image"
         env.failedReason = e.getMessage()
         throw e  // or remove to continue pipeline
     }
