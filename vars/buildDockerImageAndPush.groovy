@@ -59,7 +59,9 @@ def call(Map params = [:]) {
             if(!registryCredentialsId) {
                 error "Registry credentials ID is required to push the image."
             }
-            withDockerRegistry([credentialsId: registryCredentialsId, url: registryUrl]) {
+            withCredentials([usernamePassword( credentialsId: registryCredentialsId, usernameVariable: 'REGISTRY_USER', passwordVariable: 'REGISTRY_PASS')]) {
+                echo "Logging into Docker registry..."
+                sh "echo \$REGISTRY_PASS | docker login ${registryUrl} -u \$REGISTRY_USER --password-stdin"
                 sh "docker tag ${localImageName} ${registryImageName}"
                 sh "docker push ${registryImageName}"
             }
