@@ -11,7 +11,7 @@ def call(Map params = [:]) {
         // Informational scan: show HIGH and CRITICAL
         sh """
             docker run --rm \
-                -v /var/run/docker.sock:/var/run/docker.sock
+                -v /var/run/docker.sock:/var/run/docker.sock \
                 aquasec/trivy:latest \
                 image --quiet --no-progress \
                 --severity HIGH,CRITICAL \
