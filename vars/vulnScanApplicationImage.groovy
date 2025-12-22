@@ -36,7 +36,7 @@ def call(Map params = [:]) {
                     docker run --rm \
                         -v "\$(pwd)":/project \
                         openpolicyagent/conftest:latest \
-                        test k8s-manifest/*.yaml \
+                        test k8s-manifest \
                         --policy  opa-k8s-security.rego
                 """
                 }
