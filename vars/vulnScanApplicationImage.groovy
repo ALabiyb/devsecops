@@ -8,8 +8,10 @@ def call(Map params = [:]) {
 
         echo "Scanning image: ${imageName}"
 
-        // Informational scan: show HIGH and CRITICAL
-        sh """
+        parallel(
+                "Trivy k8s Scan": {
+                    // Informational scan: show HIGH and CRITICAL
+                    sh """
             docker run --rm \
                 -v /var/run/docker.sock:/var/run/docker.sock \
                 aquasec/trivy:latest \
@@ -18,8 +20,8 @@ def call(Map params = [:]) {
                 ${imageName} || true
         """
 
-        // Blocking scan: fail only on CRITICAL
-        sh """
+                    // Blocking scan: fail only on CRITICAL
+                    sh """
             docker run --rm \
                 -v /var/run/docker.sock:/var/run/docker.sock \
                 aquasec/trivy:latest \
@@ -28,6 +30,18 @@ def call(Map params = [:]) {
                 --severity CRITICAL \
                 ${imageName}
         """
+                },
+                "OPA Scan": {
+                    sh """
+                    docker run --rm \
+                        -v \$(pwd):/project \
+                        openpolicyagent/conftest:latest \
+                        test k8s-manifest/*.yaml \
+                        --policy  opa-k8s-security.rego
+                """
+                }
+        )
+
 
         echo "✅ Application image scan passed - No CRITICAL vulnerabilities"
         return [success: true]
