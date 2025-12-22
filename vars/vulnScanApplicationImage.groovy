@@ -33,10 +33,7 @@ def call(Map params = [:]) {
                 },
                 "OPA Scan": {
                     sh """
-                    docker run --rm \
-                        -v "\$(pwd)":/project \
-                        openpolicyagent/conftest:latest \
-                        test --policy  opa-k8s-security.rego k8s-manifest/manifest.yaml
+                    docker run --rm -v "\$(pwd)":/project openpolicyagent/conftest test --policy  opa-k8s-security.rego k8s-manifest
                 """
                 }
         )
