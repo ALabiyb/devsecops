@@ -9,7 +9,7 @@ def call(Map params = [:]) {
         echo "Scanning image: ${imageName}"
 
         parallel(
-                "Trivy k8s Scan": {
+                "Trivy Scan Application Image": {
                     // Informational scan: show HIGH and CRITICAL
                     sh """
             docker run --rm \
@@ -31,7 +31,7 @@ def call(Map params = [:]) {
                 ${imageName}
         """
                 },
-                "OPA Scan": {
+                "k8s security check OPA": {
                     sh """
                     docker run --rm -v "\$(pwd)":/project openpolicyagent/conftest test --policy  opa-k8s-security.rego k8s-manifest
                 """
