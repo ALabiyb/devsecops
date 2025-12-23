@@ -4,8 +4,20 @@ def call(Map params = [:]) {
         def repo = params.repo ?: env.GIT_REPO_URL
         def creds = params.credentialsId ?: env.GIT_CREDENTIALS_ID
         def branch = params.branch ?: env.BRANCH_NAME ?: 'main'
+        def checkoutSubmodules = params.checkoutSubmodules ?: true  // New param, default true
 
         echo "Checking out repository: ${repo} @ branch: ${branch}"
+        echo "Checkout submodules: ${checkoutSubmodules}"
+
+        // Add submodule support if enabled
+        if (checkoutSubmodules) {
+            extensions << [$class: 'SubmoduleOption',
+                           disableSubmodules: false,
+                           parentCredentials: true,
+                           recursiveSubmodules: true,
+                           trackingSubmodules: true,
+                           shallow: true]
+        }
 
         checkout([
                 $class: 'GitSCM',
@@ -16,6 +28,9 @@ def call(Map params = [:]) {
 
         // Critical: Ensure we're in the right directory and git is working
         sh 'git status'  // Debug: confirm git repo is active
+
+        // Debug: list submodule status
+        sh 'git submodule status || echo "No submodules"'
 
         // Capture commit message safely into a separate variable (avoid overwriting Jenkins' GIT_COMMIT)
         def commitMessage = sh(script: "git show -s --format=%B HEAD | head -n 1", returnStdout: true)?.trim()
