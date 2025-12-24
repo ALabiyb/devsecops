@@ -3,7 +3,13 @@ def call() {
     def credentialsId = env.K8S_MANIFEST_CREDENTIALS_ID ?: error("credentialsId is required")
     def branch = env.K8S_MANIFEST_BRANCH ?: 'main'
     def imageTag = env.BUILD_NUMBER
-    def finalImage = "${env.REGISTRY_URL}/${imageName}:${imageTag}"
+    def baseImageName = env.IMAGE_NAME
+    def harborProject = env.HARBOR_PROJECT
+    def registryUrl = env.REGISTRY_URL
+    def fullImageName = "${harborProject}/${baseImageName}"
+    def finalImage = "${registryUrl}/${fullImageName}:${imageTag}"
+
+    echo "Updating image: ${finalImage}"
 
     def tempDir = "${env.WORKSPACE}/k8s-temp"
 
