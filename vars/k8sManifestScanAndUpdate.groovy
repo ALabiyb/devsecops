@@ -79,7 +79,7 @@ def getRepoInfo(repoUrl) {
     }
 
     // Remove .git suffix if present
-    domain = domain.replaceFirst(/\.git$/, '')
+//    domain = domain.replaceFirst(/\.git$/, '')
 
     echo "Repository analysis:"
     echo "  Original URL: ${repoUrl}"
