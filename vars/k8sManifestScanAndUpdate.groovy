@@ -21,7 +21,7 @@ def call() {
         sh "rm -rf ${tempDir} || true"
 
         withCredentials([usernamePassword(credentialsId: credentialsId,
-        usernamevariable: 'GIT_USER',
+        usernameVariable: 'GIT_USER',
         passwordVariable: 'GIT_PASSWORD')]) {
 
             // Get repository information dynamically
