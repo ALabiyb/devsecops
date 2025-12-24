@@ -23,6 +23,12 @@ def call() {
         withCredentials([usernamePassword(credentialsId: credentialsId,
         usernamevariable: 'GIT_USER',
         passwordVariable: 'GIT_PASSWORD')]) {
+
+            // Get repository information dynamically
+            def repoInfo = getRepoInfo(repoUrl)
+            echo "Repository protocol: ${repoInfo.protocol}"
+            echo "Repository domain: ${repoInfo.domain}"
+
             if (repoInfo.protocol == 'https') {
                 // For HTTPS repositories (GitLab, GitHub, etc.)
                 sh """
@@ -48,4 +54,40 @@ def call() {
     } catch (e) {
         echo "Catch"
     }
+}
+
+
+/**
+ * Helper function to extract repository information dynamically
+ * Handles both HTTP and HTTPS repositories
+ */
+def getRepoInfo(repoUrl) {
+    def protocol = 'https' // default to HTTPS
+    def domain = ''
+
+    // Extract protocol and domain
+    if (repoUrl.startsWith('https://')) {
+        protocol = 'https'
+        domain = repoUrl.replaceFirst('https://', '')
+    } else if (repoUrl.startsWith('http://')) {
+        protocol = 'http'
+        domain = repoUrl.replaceFirst('http://', '')
+    } else {
+        // Assume HTTPS if no protocol specified
+        protocol = 'https'
+        domain = repoUrl
+    }
+
+    // Remove .git suffix if present
+    domain = domain.replaceFirst(/\.git$/, '')
+
+    echo "Repository analysis:"
+    echo "  Original URL: ${repoUrl}"
+    echo "  Protocol: ${protocol}"
+    echo "  Domain: ${domain}"
+
+    return [
+            protocol: protocol,
+            domain: domain
+    ]
 }
