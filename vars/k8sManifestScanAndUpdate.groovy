@@ -1,4 +1,4 @@
-def call(Map params = [:]) {
+def call() {
     def repoUrl = env.K8S_MANIFEST_REPO_URL ?: error("repoUrl is required")
     def credentialsId = env.K8S_MANIFEST_CREDENTIALS_ID ?: error("credentialsId is required")
     def branch = env.K8S_MANIFEST_BRANCH ?: 'main'
