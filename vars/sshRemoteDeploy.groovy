@@ -69,19 +69,20 @@ EOF'
 
         // 4. Log in to Harbor from the remote server and pull the new image
         withCredentials([usernamePassword(
-                credentialsId: config.registryCredentialsId,
-                usernameVariable: 'REG_USER',
-                passwordVariable: 'REG_PASS')]) {
-            sh """
-                ssh -o StrictHostKeyChecking=no ${remote} \
-                'echo \$REG_PASS | docker login ${config.registryHost} \
-                    -u \$REG_USER --password-stdin \
-                && cd ${path} \
-                && docker compose pull \
-                && docker compose down \
-                && docker compose up -d'
-            """
-        }
+        credentialsId: config.registryCredentialsId,
+        usernameVariable: 'REG_USER',
+        passwordVariable: 'REG_PASS')]) {
+    sh """
+        ssh -o StrictHostKeyChecking=no ${remote} << EOF
+echo '${REG_PASS}' | docker login ${config.registryHost} \
+    -u '${REG_USER}' --password-stdin
+cd ${path}
+docker compose pull
+docker compose down
+docker compose up -d
+EOF
+    """
+}
 
         echo "✓ Remote deploy complete → ${remote}:${path} (mode: ${config.odooMode}, port: ${config.odooPort})"
     }
