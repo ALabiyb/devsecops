@@ -69,21 +69,41 @@ def detectBuildTool() {
 //     def artifactPath = params.artifacts ?: 'target/*.jar'
 //     archiveArtifacts artifacts: artifactPath, fingerprint: true, allowEmptyArchive: false
 // }
+// def buildMaven(Map params) {
+//     echo "Stage: Build Artifact - Maven"
+
+//     def mvnHome = tool name: 'mave-3.9.15', type: 'maven'  // matches the name you set
+//     env.PATH = "${mvnHome}/bin:${env.PATH}"
+
+//     sh 'java -version'
+//     sh 'mvn -version'
+
+//     def buildCmd = params.command ?: 'mvn clean package -DskipTests=true -B'
+//     echo "Running: ${buildCmd}"
+//     sh buildCmd
+
+//     def artifactPath = params.artifacts ?: 'target/*.jar'
+//     archiveArtifacts artifacts: artifactPath, fingerprint: true, allowEmptyArchive: false
+// }
+
 def buildMaven(Map params) {
     echo "Stage: Build Artifact - Maven"
 
-    def mvnHome = tool name: 'mave-3.9.15', type: 'maven'  // matches the name you set
-    env.PATH = "${mvnHome}/bin:${env.PATH}"
+    def mvnHome = tool name: 'mave-3.9.15', type: 'maven'
+    def javaHome = tool name: 'jdk21', type: 'jdk'
 
-    sh 'java -version'
-    sh 'mvn -version'
+    withEnv(["PATH+MAVEN=${mvnHome}/bin", "PATH+JAVA=${javaHome}/bin", "JAVA_HOME=${javaHome}"]) {
+        sh 'java -version'
+        sh 'javac -version'
+        sh 'mvn -version'
 
-    def buildCmd = params.command ?: 'mvn clean package -DskipTests=true -B'
-    echo "Running: ${buildCmd}"
-    sh buildCmd
+        def buildCmd = params.command ?: 'mvn clean package -DskipTests=true -B'
+        echo "Running: ${buildCmd}"
+        sh buildCmd
 
-    def artifactPath = params.artifacts ?: 'target/*.jar'
-    archiveArtifacts artifacts: artifactPath, fingerprint: true, allowEmptyArchive: false
+        archiveArtifacts artifacts: (params.artifacts ?: 'target/*.jar'),
+                         fingerprint: true, allowEmptyArchive: false
+    }
 }
 
 // NPM / Node.js / Next.js build
