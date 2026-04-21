@@ -57,8 +57,24 @@ def detectBuildTool() {
 }
 
 // Maven build
+// def buildMaven(Map params) {
+//     echo "Stage: Build Artifact - Maven"
+//     sh 'java -version'
+//     sh 'mvn -version'
+
+//     def buildCmd = params.command ?: 'mvn clean package -DskipTests=true -B'
+//     echo "Running: ${buildCmd}"
+//     sh buildCmd
+
+//     def artifactPath = params.artifacts ?: 'target/*.jar'
+//     archiveArtifacts artifacts: artifactPath, fingerprint: true, allowEmptyArchive: false
+// }
 def buildMaven(Map params) {
     echo "Stage: Build Artifact - Maven"
+
+    def mvnHome = tool name: 'mave-3.9.15', type: 'maven'  // matches the name you set
+    env.PATH = "${mvnHome}/bin:${env.PATH}"
+
     sh 'java -version'
     sh 'mvn -version'
 
