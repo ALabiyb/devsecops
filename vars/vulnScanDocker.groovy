@@ -8,7 +8,7 @@ def call(Map params = [:]) {
                     def javaHome = tool name: 'jdk21', type: 'jdk'
                     withEnv(["PATH+MAVEN=${mvnHome}/bin", "PATH+JAVA=${javaHome}/bin", "JAVA_HOME=${javaHome}"]) {
                         withCredentials([string(credentialsId: 'nvd-api-key', variable: 'NVD_API_KEY')]) {
-                            sh 'mvn dependency-check:check -Dnvd.api.key=$NVD_API_KEY'
+                            sh "mvn dependency-check:check -Dnvd.api.key=$NVD_API_KEY"
                             // Note: use single quotes to avoid Groovy interpolation warning
                         }
                     }
