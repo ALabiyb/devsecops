@@ -33,7 +33,7 @@ def call(Map params = [:]) {
 
         // Build args handling
         def buildArgsString = buildArgs.collect { key, value ->
-        "--build-arg ${key}=${value}"
+        "--build-arg ${key}='${value}'"
         }.join(' ')
 
         echo "🔨 Building Docker image..."
