@@ -277,6 +277,7 @@ BRANCH_NAME = 'main'
 ```groovy
 K8S_MANIFEST_REPO_URL = 'https://github.com/your-org/k8s-manifests.git'
 K8S_MANIFEST_BRANCH = 'main'
+K8S_MANIFEST_PATHS = 'k8s/deployment.yaml,k8s/ingress.yaml' // Comma-separated paths
 ```
 
 ---
@@ -301,6 +302,7 @@ devsecops/
 │   ├── buildDockerImageAndPush.groovy
 │   ├── checkoutAndGitInfo.groovy
 │   ├── detectBuildTrigger.groovy
+│   ├── updateK8sManifest.groovy
 │   ├── k8sManifestScanAndUpdate.groovy
 │   ├── sendFailureNotification.groovy
 │   ├── sendStartNotification.groovy

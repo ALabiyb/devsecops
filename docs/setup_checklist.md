@@ -117,33 +117,6 @@ Use this checklist to ensure you have everything configured before running your 
 
 ---
 
-## ✅ Application Repository
-
-### Required Files
-- [ ] `Dockerfile` exists in repository root
-- [ ] `trivy-docker-image-scan.sh` exists
-- [ ] `opa-docker-security.rego` exists
-- [ ] `opa-k8s-security.rego` exists (if using K8s stage)
-- [ ] Build file exists (`pom.xml`, `package.json`, etc.)
-
-### Dockerfile Validation
-- [ ] Dockerfile builds successfully locally
-  ```bash
-  docker build -t test .
-  ```
-- [ ] Base image is accessible
-- [ ] No syntax errors
-
-### Scripts Validation
-- [ ] `trivy-docker-image-scan.sh` is executable
-  ```bash
-  chmod +x trivy-docker-image-scan.sh
-  ```
-- [ ] Script runs successfully locally
-- [ ] OPA policies are valid
-
----
-
 ## ✅ K8s Manifest Repository (Optional)
 
 ### Repository Setup
@@ -153,13 +126,23 @@ Use this checklist to ensure you have everything configured before running your 
 - [ ] Credentials have write access (for updates)
 
 ### Manifest Structure
-- [ ] Deployment YAML exists
-- [ ] Service YAML exists (if needed)
-- [ ] Image references are correct format
+- [ ] Define manifest paths in `K8S_MANIFEST_PATHS` (e.g., `deployment.yaml,ingress.yaml`)
+- [ ] Image references are correct format (e.g., `image: my-service:tag`)
 - [ ] Manifests are valid
   ```bash
   kubectl apply --dry-run=client -f deployment.yaml
   ```
+
+---
+
+## ✅ Application Repository
+
+### Required Files
+- [ ] `Dockerfile` exists in repository root
+- [ ] `trivy-docker-image-scan.sh` exists
+- [ ] `opa-docker-security.rego` exists
+- [ ] `opa-k8s-security.rego` exists in root (required for `k8sManifestScanAndUpdate`)
+- [ ] Build file exists (`pom.xml`, `package.json`, etc.)
 
 ---
 
