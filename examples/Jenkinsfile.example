@@ -1,0 +1,139 @@
+library identifier: 'jenkins-shared-library@main', retriever: modernSCM([
+    $class: 'GitSCMSource',
+    remote: 'http://192.168.15.85/devsecops1/pipeline.git',
+    credentialsId: 'lsaid',
+    traits: [[$class: 'jenkins.plugins.git.traits.BranchDiscoveryTrait']]
+])
+
+pipeline {
+    agent any
+
+    environment {
+        // Project info
+        PROJECT_NAME = 'Tanzania Compliance Rule Engine'
+        IMAGE_NAME = 'tcre-softaml'
+        HARBOR_PROJECT = 'softaml' 
+        REGISTRY_URL = 'harbor.devops.softnethq.co.tz' 
+        REGISTRY_CREDENTIALS_ID = 'robot-jenkins' 
+
+        // Notifications
+        NOTIFICATION_EMAIL = 'admin@example.com' 
+
+        // Git info
+        BRANCH_NAME = 'main'
+        GIT_REPO_URL = 'http://192.168.15.85/soft-aml/tanzania-compliance-engine.git'
+        GIT_CREDENTIALS_ID = 'lsaid' 
+
+        // K8s Manifest Config (GitOps)
+        K8S_MANIFEST_REPO_URL = 'http://192.168.15.85/kubernetes-manifest/softaml-k8s-manifest/tanzania-compliance-engine.git'
+        K8S_MANIFEST_CREDENTIALS_ID = 'lsaid'
+        K8S_MANIFEST_BRANCH = 'main'
+        K8S_MANIFEST_PATHS = '03-deployment.yaml' 
+
+        // Build info
+        BUILD_TOOL = 'maven' // Supports: maven, npm, go, gradle, dotnet
+        APP_TIMEZONE = 'Africa/Dar_es_Salaam'
+    }
+
+    stages {
+        stage('Checkout and Git Info') {
+            steps {
+                script {
+                    checkoutAndGitInfo() 
+                }
+            }
+        }
+
+        stage('Send Start Notification') {
+            steps {
+                script {
+                    sendStartNotification(
+                        subject: "🚀 Pipeline Started: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                        recipients: env.NOTIFICATION_EMAIL,
+                        triggeredBy: detectBuildTrigger()
+                    )
+                }
+            }
+        }
+
+        stage('Build Artifact') {
+            steps {
+                script {
+                    buildArtifact() 
+                }
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                script {
+                    sonarSast(
+                        sonarServer: 'SonarQube Server',
+                        projectKey: 'tcre-softaml',
+                        projectName: 'Tanzania Compliance Rule Engine',
+                        waitForQualityGate: true
+                    )
+                }
+            }
+        }
+
+        stage('Vulnerability Scan - Docker') {
+            steps {
+                script {
+                    vulnScanDocker() 
+                }
+            }
+        }
+
+        stage('Build Docker Image and Publish') {
+            steps {
+                script {
+                    def result = buildDockerImageAndPush(
+                        imageName: env.IMAGE_NAME,
+                        imageTag: env.BUILD_NUMBER,
+                        harborProject: env.HARBOR_PROJECT,
+                        registryUrl: env.REGISTRY_URL,
+                        registryCredentialsId: env.REGISTRY_CREDENTIALS_ID,
+                        pushToRegistry: true,
+                        buildArgs: [
+                            VERSION: "1.0.${env.BUILD_NUMBER}",
+                            APP_TIMEZONE: env.APP_TIMEZONE
+                        ]
+                    )
+                    env.FINAL_IMAGE_NAME = result.localImageName 
+                }
+            }
+        }
+
+        stage('k8s Manifest Cloning & Update') {
+            steps {
+                script {
+                    // Option 1: Update AND Scan (Higher Security)
+                    // k8sManifestScanAndUpdate() 
+                    
+                    // Option 2: Update only
+                    updateK8sManifest() 
+                }
+            }
+        }
+    }
+    
+    post {
+        success {
+            script {
+                sendSuccessNotification(
+                    recipients: env.NOTIFICATION_EMAIL,
+                    triggeredBy: detectBuildTrigger()
+                )
+            }
+        }
+        failure {
+            script {
+                sendFailureNotification(
+                    recipients: env.NOTIFICATION_EMAIL,
+                    triggeredBy: detectBuildTrigger()
+                )
+            }
+        }
+    }
+}
