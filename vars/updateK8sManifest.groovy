@@ -4,26 +4,37 @@
  * Enhanced to support both GitLab (HTTPS) and Gitea (HTTP) repositories
  */
 def call(Map params = [:]) {
-    // Extract parameters with default values
-    def repoUrl = params.repoUrl ?: error("repoUrl parameter is required")
-    def manifestPath = params.manifestPath ?: 'deployment.yaml'
-    def branch = params.branch ?: 'main'
-    def credentialsId = params.credentialsId ?: error("credentialsId parameter is required")
-    def imageName = params.imageName ?: error("imageName parameter is required")
+    // Extract parameters with default values (falling back to environment variables)
+    def repoUrl = params.repoUrl ?: env.K8S_MANIFEST_REPO_URL ?: error("repoUrl is required")
+    
+    // Support single path (manifestPath) or comma-separated list (K8S_MANIFEST_PATHS)
+    def manifestPath = params.manifestPath ?: env.K8S_MANIFEST_PATHS ?: 'deployment.yaml'
+    if (manifestPath instanceof String && manifestPath.contains(',')) {
+        manifestPath = manifestPath.split(',').collect { it.trim() }
+    }
+    
+    def branch = params.branch ?: env.K8S_MANIFEST_BRANCH ?: 'main'
+    def credentialsId = params.credentialsId ?: env.K8S_MANIFEST_CREDENTIALS_ID ?: error("credentialsId is required (pass parameter or set env.K8S_MANIFEST_CREDENTIALS_ID)")
+    def imageName = params.imageName ?: env.IMAGE_NAME ?: error("imageName is required (pass parameter or set env.IMAGE_NAME)")
     def imageTag = params.imageTag ?: env.BUILD_NUMBER ?: 'latest'
-    def registryType = params.registryType ?: 'dockerhub'
-    def registryUrl = params.registryUrl ?: 'docker.io'
-    def privateRegistryUrl = params.privateRegistryUrl ?: ''
+    def registryUrl = params.registryUrl ?: env.REGISTRY_URL ?: 'docker.io'
+    def registryType = params.registryType ?: (env.REGISTRY_URL?.contains('harbor') ? 'harbor' : 'dockerhub')
+    def privateRegistryUrl = params.privateRegistryUrl ?: (env.HARBOR_PROJECT ? "${registryUrl}/${env.HARBOR_PROJECT}" : '')
     def gitEmail = params.gitEmail ?: 'jenkins@ci.com'
     def gitName = params.gitName ?: 'Jenkins CI'
     def commitMessage = params.commitMessage ?: "Update ${imageName} image to tag ${imageTag} [skip ci]"
 
-    echo "=== Updating Kubernetes Manifest ==="
+    echo "=== Updating Kubernetes Manifests ==="
     echo "Repository: ${repoUrl}"
-    echo "Manifest Path: ${manifestPath}"
+    echo "Manifest Paths: ${manifestPath instanceof List ? manifestPath.join(', ') : manifestPath}"
     echo "Branch: ${branch}"
     echo "Image: ${imageName}:${imageTag}"
     echo "Registry Type: ${registryType}"
+
+    // Ensure manifestPath is a list (support both single and multiple paths)
+    if (!(manifestPath instanceof List)) {
+        manifestPath = [manifestPath]
+    }
 
     // Initialize variables
     def tempDir = "${env.WORKSPACE}/manifest-repo"
@@ -72,75 +83,96 @@ def call(Map params = [:]) {
             }
         }
 
-        // Define the full path to the manifest file
-        def manifestFile = "${tempDir}/${manifestPath}"
-        
-        // Verify the manifest file exists
-        if (!fileExists(manifestFile)) {
-            error "Manifest file not found at path: ${manifestFile}"
+        // Process each manifest file
+        def updatedFiles = []
+        manifestPath.each { singlePath ->
+            def manifestFile = "${tempDir}/${singlePath}"
+            
+            // Verify the manifest file exists
+            if (!fileExists(manifestFile)) {
+                echo "Warning: Manifest file not found at path: ${manifestFile}. Skipping."
+                return  // continue to next file
+            }
+
+            echo "Updating image in manifest file: ${manifestFile}"
+
+            // Smart image update logic with better handling for commented lines and multiple containers
+            sh """#!/bin/bash
+                set -e
+                
+                MANIFEST_FILE="${manifestFile}"
+                FINAL_IMAGE="${finalImageName}"
+                IMAGE_NAME="${imageName}"
+                
+                echo "Processing manifest file: \$MANIFEST_FILE"
+                echo "Target image: \$FINAL_IMAGE"
+                echo "Looking for image name: \$IMAGE_NAME"
+                
+                # Extract the base image name (last part after /)
+                IMAGE_BASE_NAME=\$(echo "\$IMAGE_NAME" | awk -F/ '{print \$NF}' | cut -d: -f1)
+                echo "Image base name to search for: \$IMAGE_BASE_NAME"
+                
+                # Count non-commented image lines (must have whitespace before image:)
+                IMAGE_COUNT=\$(grep -E '^[[:space:]]+image:' "\$MANIFEST_FILE" | wc -l)
+                echo "Found \$IMAGE_COUNT image lines (non-commented) in the manifest"
+                
+                # Backup the original file
+                cp "\$MANIFEST_FILE" "\$MANIFEST_FILE.backup"
+                
+                if [ "\$IMAGE_COUNT" -eq 0 ]; then
+                    echo "❌ No image lines found in the manifest!"
+                    exit 1
+                fi
+                
+                # Try to find and update only lines containing our image name
+                if grep -E "^[[:space:]]+image:.*\$IMAGE_BASE_NAME" "\$MANIFEST_FILE" > /dev/null; then
+                    echo "✔️  Found image containing '\$IMAGE_BASE_NAME' - updating only those lines"
+                    # Update only lines that contain our image base name
+                    sed -i "/^[[:space:]]*image:.*\$IMAGE_BASE_NAME/{s|image:.*|image: \$FINAL_IMAGE|g}" "\$MANIFEST_FILE"
+                else
+                    # If no matching image name found, but we have exactly 1 image, update it
+                    if [ "\$IMAGE_COUNT" -eq 1 ]; then
+                        echo "⚠️  No image with '\$IMAGE_BASE_NAME' found, but found 1 image line - updating it"
+                        sed -i "/^[[:space:]]*image:/{s|image:.*|image: \$FINAL_IMAGE|g}" "\$MANIFEST_FILE"
+                    else
+                        echo "❌ Multiple images found but none match '\$IMAGE_BASE_NAME':"
+                        grep "^[[:space:]]*image:" "\$MANIFEST_FILE"
+                        exit 1
+                    fi
+                fi
+                
+                echo "Update completed. Current image lines:"
+                grep "image:" "\$MANIFEST_FILE" || true
+                
+                # Verify the update worked (check for the final image anywhere in image lines)
+                if grep "image: \$FINAL_IMAGE" "\$MANIFEST_FILE" > /dev/null; then
+                    echo "✅ Image update verified in manifest"
+                else
+                    echo "❌ Failed to update image in manifest!"
+                    echo "Expected to find: image: \$FINAL_IMAGE"
+                    echo "Found:"
+                    grep "image:" "\$MANIFEST_FILE" || echo "[no image lines found]"
+                    exit 1
+                fi
+            """
+
+            // Verify the change was made
+            def updatedContent = sh(script: "grep 'image:' '${manifestFile}'", returnStdout: true).trim()
+            echo "Updated image lines in manifest: ${updatedContent}"
+
+            if (!updatedContent.contains(finalImageName)) {
+                error "Failed to update image in manifest file ${manifestFile}. Expected to find: ${finalImageName}"
+            }
+
+            updatedFiles.add([
+                path: singlePath,
+                file: manifestFile,
+                updatedContent: updatedContent
+            ])
         }
 
-        echo "Updating image in manifest file: ${manifestFile}"
-
-        // Smart image update logic
-        sh """#!/bin/bash
-            set -e
-            
-            MANIFEST_FILE="${manifestFile}"
-            FINAL_IMAGE="${finalImageName}"
-            IMAGE_NAME="${imageName}"
-            
-            echo "Processing manifest file: \$MANIFEST_FILE"
-            echo "Target image: \$FINAL_IMAGE"
-            
-            # Count how many image lines exist in the manifest
-            IMAGE_COUNT=\$(grep -c "image:" "\$MANIFEST_FILE" || true)
-            echo "Found \$IMAGE_COUNT image lines in the manifest"
-            
-            # Backup the original file
-            cp "\$MANIFEST_FILE" "\$MANIFEST_FILE.backup"
-            
-            if [ "\$IMAGE_COUNT" -eq 0 ]; then
-                echo "❌ No image lines found in the manifest!"
-                exit 1
-            elif [ "\$IMAGE_COUNT" -eq 1 ]; then
-                echo "Only one image found - updating any image line"
-                # Update ANY image line
-                sed -i "s|image:.*|image: \$FINAL_IMAGE|g" "\$MANIFEST_FILE"
-            else
-                echo "Multiple images found - updating only images matching our image name"
-                # Extract image name without tag and registry
-                IMAGE_BASE_NAME=\$(echo "\$IMAGE_NAME" | awk -F/ '{print \$NF}' | cut -d: -f1)
-                echo "Looking for images containing: \$IMAGE_BASE_NAME"
-                
-                # Update only lines containing our image name (more flexible matching)
-                if grep -q "image:.*\$IMAGE_BASE_NAME" "\$MANIFEST_FILE"; then
-                    sed -i "s|image:.*\$IMAGE_BASE_NAME[^[:space:]]*|image: \$FINAL_IMAGE|g" "\$MANIFEST_FILE"
-                else
-                    echo "⚠️ No matching image found for \$IMAGE_BASE_NAME, updating first image line"
-                    sed -i "0,/image:/s|image:.*|image: \$FINAL_IMAGE|" "\$MANIFEST_FILE"
-                fi
-            fi
-            
-            echo "Update completed. Current image lines:"
-            grep "image:" "\$MANIFEST_FILE"
-            
-            # Verify the update worked
-            if ! grep -q "image: \$FINAL_IMAGE" "\$MANIFEST_FILE"; then
-                echo "❌ Failed to update image in manifest!"
-                echo "Expected: image: \$FINAL_IMAGE"
-                echo "Found:"
-                grep "image:" "\$MANIFEST_FILE"
-                exit 1
-            fi
-        """
-
-        // Verify the change was made
-        def updatedContent = sh(script: "grep 'image:' '${manifestFile}'", returnStdout: true).trim()
-        echo "Updated image lines in manifest: ${updatedContent}"
-
-        if (!updatedContent.contains(finalImageName)) {
-            error "Failed to update image in manifest file. Expected to find: ${finalImageName}"
+        if (updatedFiles.isEmpty()) {
+            error "No manifest files were successfully updated."
         }
 
         // Commit and push the changes
@@ -162,12 +194,12 @@ def call(Map params = [:]) {
                     # Update remote URL with credentials for pushing using the correct protocol
                     git remote set-url origin ${protocol}://\${GIT_USERNAME}:\${GIT_PASSWORD}@${domain}
                     
-                    # Add, commit and push changes
-                    git add "${manifestPath}"
+                    # Add all updated manifest files
+                    ${updatedFiles.collect { "git add \"${it.path}\"" }.join('\n                    ')}
                     
                     # Check if there are changes to commit
                     if git diff --cached --quiet; then
-                        echo "No changes to commit - image might already be up to date"
+                        echo "No changes to commit - images might already be up to date"
                     else
                         git commit -m "${commitMessage}"
                         echo "Pushing changes to repository..."
@@ -178,13 +210,12 @@ def call(Map params = [:]) {
             }
         }
 
-        echo "✅ Successfully updated manifest file with image: ${finalImageName}"
+        echo "✅ Successfully updated ${updatedFiles.size()} manifest file(s) with image: ${finalImageName}"
         
         return [
             success: true,
             finalImageName: finalImageName,
-            manifestFile: manifestFile,
-            updatedContent: updatedContent
+            updatedFiles: updatedFiles
         ]
 
     } catch (Exception e) {
@@ -240,7 +271,7 @@ def getRepoInfo(repoUrl) {
     }
     
     // Remove .git suffix if present
-    domain = domain.replaceFirst(/\.git$/, '')
+    //domain = domain.replaceFirst(/\.git$/, '')
     
     echo "Repository analysis:"
     echo "  Original URL: ${repoUrl}"
