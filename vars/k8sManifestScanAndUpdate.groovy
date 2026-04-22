@@ -21,7 +21,7 @@ def call() {
         sh "rm -rf ${tempDir} || true"
 
         withCredentials([usernamePassword(credentialsId: credentialsId,
-        usernameVariable: 'GIT_USER',
+        usernameVariable: 'GIT_USERNAME',
         passwordVariable: 'GIT_PASSWORD')]) {
 
             // Get repository information dynamically
@@ -52,7 +52,11 @@ def call() {
             }
         }
     } catch (e) {
-        echo "Catch"
+        env.failedStage = "Kubernetes Manifest Scan & Update"
+        env.failedReason = e.getMessage()
+        echo "Kubernetes manifest scanning error: ${e}"
+        currentBuild.result = 'FAILURE'
+        throw e
     }
 }
 
