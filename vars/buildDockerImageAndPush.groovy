@@ -9,6 +9,7 @@ def call(Map params = [:]) {
     def dockerfilePath = params.dockerfilePath ?: 'Dockerfile'
     def buildContext = params.buildContext ?: '.'
     def buildArgs = params.buildArgs ?: [:]
+    def dockerTarget = params.dockerTarget ?: '' // Supports multi-stage --target
     def pushToRegistry = params.pushToRegistry ?: false
     def removeAfterPush = params.removeAfterPush ?: true
     def failOnError = params.containsKey('failOnError') ? params.failOnError : true  // default: fail pipeline on error
@@ -36,10 +37,13 @@ def call(Map params = [:]) {
         "--build-arg ${key}='${value}'"
         }.join(' ')
 
+        def targetFlag = dockerTarget ? "--target ${dockerTarget}" : ''
+
         echo "🔨 Building Docker image..."
         sh """
             docker build -t ${localImageName} \
                 -f ${dockerfilePath} \
+                ${targetFlag} \
                 ${buildArgsString} \
                 ${buildContext}
         """
