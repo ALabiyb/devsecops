@@ -1,7 +1,7 @@
 def call(Map params = [:]) {
-    try {
-        // Determine build tool: param > env > auto-detect > default to maven
+    // Determine build tool: param > env > auto-detect > default to maven
         def buildTool = params.buildTool ?: env.BUILD_TOOL
+    try {
 
         if (!buildTool) {
             buildTool = detectBuildTool()
