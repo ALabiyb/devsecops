@@ -1,0 +1,82 @@
+# =============================================================================
+# Production Dockerfile — Spring Boot Java Microservice
+# Matches: All Java Spring Boot services
+# Base:    eclipse-temurin:21-jre-alpine (JRE only, not JDK — smaller image)
+# =============================================================================
+
+# ── BASE IMAGE ────────────────────────────────────────────────────────────────
+# ✅ Pinned version (not :latest) — OPA policy enforces this
+# ✅ Alpine variant — smallest secure base (~80MB vs ~300MB for debian)
+# ✅ JRE only — JDK not needed at runtime (saves ~150MB)
+# ✅ eclipse-temurin — official Adoptium build, well-maintained
+FROM eclipse-temurin:21-jre-alpine
+
+# ── BUILD ARGS (injected by Jenkins pipeline) ─────────────────────────────────
+# These become image labels for traceability — who built it, from which commit
+ARG GIT_AUTHOR=unknown
+ARG GIT_COMMIT=unknown
+ARG BUILD_DATE=unknown
+ARG VERSION=unknown
+ARG APP_TIMEZONE=Africa/Dar_es_Salaam
+ARG APP_NAME=unknown
+
+# ── LABELS (image metadata) ───────────────────────────────────────────────────
+# OCI standard labels — visible in Harbor and docker inspect
+LABEL org.opencontainers.image.title="${APP_NAME}" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.revision="${GIT_COMMIT}" \
+      org.opencontainers.image.authors="${GIT_AUTHOR}" \
+      org.opencontainers.image.vendor="Softnet Technologies Limited"
+
+# ── TIMEZONE ──────────────────────────────────────────────────────────────────
+ENV TZ=${APP_TIMEZONE}
+RUN apk add --no-cache tzdata && \
+    cp /usr/share/zoneinfo/${APP_TIMEZONE} /etc/localtime && \
+    echo "${APP_TIMEZONE}" > /etc/timezone && \
+    apk del tzdata
+
+# ── WORKING DIRECTORY ─────────────────────────────────────────────────────────
+WORKDIR /app
+
+# ── NON-ROOT USER ─────────────────────────────────────────────────────────────
+# ✅ OPA policy requires non-root — this satisfies it
+# Create group 'aml' and user 'aml', no home dir, no password
+RUN addgroup -S aml && adduser -S aml -G aml
+
+# ── APPLICATION JAR ───────────────────────────────────────────────────────────
+# Built by: mvn clean package -DskipTests=true -B (in buildArtifact stage)
+# Output:   target/branding-service-1.0.0.jar
+# Renamed:  app.jar (consistent across all services)
+COPY target/*.jar app.jar
+
+# ── DIRECTORIES & PERMISSIONS ─────────────────────────────────────────────────
+# Create any app-specific directories and give ownership to non-root user
+RUN mkdir -p /app/logs /app/logos && \
+    chown -R aml:aml /app
+
+# ── SWITCH TO NON-ROOT ────────────────────────────────────────────────────────
+USER aml
+
+# ── PORT ──────────────────────────────────────────────────────────────────────
+# Document which port the app listens on (informational — actual mapping in k8s)
+EXPOSE 8080
+
+# ── HEALTHCHECK ───────────────────────────────────────────────────────────────
+# Docker checks this to know if the container is healthy
+# Adjust the path to match your Spring Boot actuator endpoint
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD wget -qO- http://localhost:8080/actuator/health || exit 1
+
+# ── ENTRYPOINT ────────────────────────────────────────────────────────────────
+# JVM options:
+#   -XX:+UseContainerSupport       → respect container CPU/memory limits
+#   -XX:MaxRAMPercentage=75.0      → use 75% of container memory for heap
+#   -Djava.security.egd=...        → faster startup (avoids /dev/random blocking)
+#   -Dspring.profiles.active=prod  → activate production profile
+ENTRYPOINT ["java", \
+    "-XX:+UseContainerSupport", \
+    "-XX:MaxRAMPercentage=75.0", \
+    "-Djava.security.egd=file:/dev/./urandom", \
+    "-Dspring.profiles.active=prod", \
+    "-jar", "app.jar"]

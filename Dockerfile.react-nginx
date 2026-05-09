@@ -1,0 +1,77 @@
+# =============================================================================
+# Production Dockerfile — React / Next.js / Vite Frontend
+# Matches: All Frontend Applications
+# Pattern: npm build → nginx serve
+# =============================================================================
+
+# ── STAGE 1: BUILD ────────────────────────────────────────────────────────────
+# Uses node:20-alpine to compile the React/Next.js app
+# This stage is discarded after build — final image has no Node.js
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Copy package files first (better Docker layer caching)
+# If package.json hasn't changed, npm ci is skipped on rebuild
+COPY package.json package-lock.json ./
+
+# Install dependencies
+# npm ci: uses package-lock.json, faster and reproducible
+RUN npm ci --frozen-lockfile
+
+# Copy source code
+COPY . .
+
+# Build the application
+# Output: dist/ (Vite/React) or .next/ (Next.js) or build/ (CRA)
+RUN npm run build
+
+# ── STAGE 2: SERVE ────────────────────────────────────────────────────────────
+# ✅ No Node.js in final image — much smaller and more secure
+# ✅ Pinned nginx version — OPA policy enforces no :latest
+FROM nginx:1.27-alpine
+
+# ── BUILD ARGS ────────────────────────────────────────────────────────────────
+ARG GIT_AUTHOR=unknown
+ARG GIT_COMMIT=unknown
+ARG BUILD_DATE=unknown
+ARG VERSION=unknown
+
+# ── LABELS ────────────────────────────────────────────────────────────────────
+LABEL org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.revision="${GIT_COMMIT}" \
+      org.opencontainers.image.authors="${GIT_AUTHOR}" \
+      org.opencontainers.image.vendor="Softnet Technologies Limited"
+
+# ── NGINX CONFIG ──────────────────────────────────────────────────────────────
+# Copy custom nginx config (handles SPA routing — all paths → index.html)
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+# ── COPY BUILD OUTPUT ─────────────────────────────────────────────────────────
+# For Vite/React (dist/)
+COPY --from=builder /app/dist /usr/share/nginx/html
+
+# For Next.js static export — use this instead:
+# COPY --from=builder /app/out /usr/share/nginx/html
+
+# For CRA (build/) — use this instead:
+# COPY --from=builder /app/build /usr/share/nginx/html
+
+# ── NON-ROOT USER ─────────────────────────────────────────────────────────────
+# nginx runs as www-data (UID 101) in alpine — set permissions accordingly
+RUN chown -R nginx:nginx /usr/share/nginx/html && \
+    chown -R nginx:nginx /var/cache/nginx && \
+    chown -R nginx:nginx /var/log/nginx && \
+    chown -R nginx:nginx /etc/nginx/conf.d && \
+    touch /var/run/nginx.pid && \
+    chown nginx:nginx /var/run/nginx.pid
+
+USER nginx
+
+EXPOSE 80
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget -qO- http://localhost:80/ || exit 1
+
+CMD ["nginx", "-g", "daemon off;"]

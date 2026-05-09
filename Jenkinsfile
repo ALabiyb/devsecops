@@ -238,7 +238,8 @@ pipeline {
                             GIT_COMMIT  : env.GIT_COMMIT,
                             BUILD_DATE  : new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'", TimeZone.getTimeZone('UTC')),
                             VERSION     : "1.0.${env.BUILD_NUMBER}",
-                            APP_TIMEZONE: env.APP_TIMEZONE
+                            APP_TIMEZONE: env.APP_TIMEZONE,
+                            APP_NAME    : env.PROJECT_NAME
                         ]
                     )
                     env.FINAL_IMAGE_NAME = result.localImageName  // used by stage 9

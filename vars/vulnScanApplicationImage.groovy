@@ -1,128 +1,135 @@
 /**
  * vulnScanApplicationImage.groovy
  *
- * Scans the BUILT application image (after docker build & push to Harbor).
- * This is deeper than vulnScanDocker — scans ALL image layers including
- * the compiled app, OS packages, Java JARs inside the image, npm packages, etc.
+ * Scans the BUILT local Docker image, then removes it to keep disk clean.
  *
- * Runs two checks in parallel:
+ * WHY LOCAL IMAGE (not Harbor URL)?
+ *   Trivy needs docker socket access to inspect image layers.
+ *   The local image (e.g. soft-aml-branding-service:1) is already on the
+ *   Jenkins host after buildDockerImageAndPush — no re-pull needed.
+ *   Scanning via Harbor URL requires authentication + re-download of layers.
  *
- *   1. Trivy Full Image Scan — ALL layers, OS + app dependencies
- *      Round 1: HIGH+CRITICAL shown, never fails (full visibility)
- *      Round 2: CRITICAL only, fails build (blocks bad deployments)
+ * CLEANUP ORDER:
+ *   Stage 8: buildDockerImageAndPush  → builds, pushes, KEEPS local image
+ *   Stage 9: vulnScanApplicationImage → scans local image → REMOVES it here
+ *   Docker build cache capped at 2GB here after scan completes
  *
- *   2. OPA K8s Manifest Scan — validates your deployment yamls
- *      Policy: opa-k8s-security.rego
- *      Checks: non-root containers, resource limits, no privileged,
- *              no latest tags, no hostPID/hostIPC, readOnlyRootFilesystem
- *
- * Prerequisites:
- *   - env.FINAL_IMAGE_NAME must be set (done by buildDockerImageAndPush)
- *   - opa-k8s-security.rego in project root
- *   - k8s/ or k8s-manifest/ directory with manifest files
+ * env.FINAL_IMAGE_NAME must be set by buildDockerImageAndPush (local tag).
  *
  * Usage:
  *   vulnScanApplicationImage()
- *   vulnScanApplicationImage(imageName: 'harbor.example.com/proj/app:42')
- *   vulnScanApplicationImage(k8sDir: 'manifests/')
+ *   vulnScanApplicationImage(k8sDir: 'k8s/')
  */
 def call(Map params = [:]) {
     try {
         echo "=== Vulnerability Scan - Application Image ==="
 
-        // FINAL_IMAGE_NAME is set by buildDockerImageAndPush
-        // Falls back to constructing from env vars if not set
-        def imageName = params.imageName
+        // Use the LOCAL image name (e.g. soft-aml-branding-service:42)
+        // NOT the Harbor URL — Trivy scans local images via docker socket
+        def localImageName = params.imageName
             ?: env.FINAL_IMAGE_NAME
-            ?: "${env.REGISTRY_URL}/${env.HARBOR_PROJECT}/${env.IMAGE_NAME}:${env.BUILD_NUMBER}"
+            ?: "${env.IMAGE_NAME}:${env.BUILD_NUMBER}"
 
-        echo "Scanning image: ${imageName}"
+        echo "Scanning local image: ${localImageName}"
+        echo "ℹ️  Image will be removed after scan to keep disk clean"
 
-        // Auto-detect k8s manifest directory, or accept explicit override
         def k8sDir = params.k8sDir ?: detectK8sDir()
 
-        parallel(
+        try {
+            parallel(
 
-            // -----------------------------------------------------------------
-            // SCAN 1: Trivy — full application image scan (all layers)
-            // Scans: OS packages, Java JARs, npm packages, Python packages, etc.
-            //
-            // Round 1: informational — show ALL HIGH+CRITICAL, never fails
-            //          gives full visibility without blocking the pipeline
-            // Round 2: enforcement  — CRITICAL only, exit 1 blocks the build
-            //          prevents deploying critically vulnerable images
-            //
-            // Trivy cache mounted from host to avoid re-downloading DB
-            // Docker socket mounted to access built image layers
-            // -----------------------------------------------------------------
-            "Trivy — Application Image Scan": {
-                echo "🔍 Trivy Round 1: informational scan (HIGH+CRITICAL)..."
-                sh """
-                    docker run --rm \
-                        -v /var/run/docker.sock:/var/run/docker.sock \
-                        -v /var/lib/jenkins/.trivy-cache:/root/.cache/trivy \
-                        aquasec/trivy:latest \
-                        image \
-                        --quiet \
-                        --no-progress \
-                        --severity HIGH,CRITICAL \
-                        --exit-code 0 \
-                        ${imageName} || true
-                """
-
-                echo "🔍 Trivy Round 2: enforcement scan (CRITICAL only)..."
-                sh """
-                    docker run --rm \
-                        -v /var/run/docker.sock:/var/run/docker.sock \
-                        -v /var/lib/jenkins/.trivy-cache:/root/.cache/trivy \
-                        aquasec/trivy:latest \
-                        image \
-                        --quiet \
-                        --no-progress \
-                        --severity CRITICAL \
-                        --exit-code 1 \
-                        ${imageName}
-                """
-                echo "✅ Trivy application image scan passed (no CRITICAL CVEs)"
-            },
-
-            // -----------------------------------------------------------------
-            // SCAN 2: OPA Conftest — K8s manifest security policies
-            // Policy file: opa-k8s-security.rego (in project root)
-            //
-            // Policies enforced (from your opa-k8s-security.rego):
-            //   ✅ All resources must have namespace
-            //   ✅ No root containers (runAsUser: 0 forbidden)
-            //   ✅ runAsNonRoot: true required
-            //   ✅ No privileged containers
-            //   ✅ No allowPrivilegeEscalation
-            //   ✅ readOnlyRootFilesystem: true (except postgres/mysql/mongodb/redis)
-            //   ✅ Resource limits required (CPU + memory)
-            //   ✅ No hostPID or hostIPC sharing
-            //   ✅ No dangerous hostPath mounts (/proc, /sys, /)
-            //   ✅ No :latest image tags
-            //   ✅ Services must be NodePort (your custom rule)
-            // -----------------------------------------------------------------
-            "OPA Conftest — K8s Manifest Policies": {
-                echo "🔍 OPA: validating K8s manifests against security policies..."
-                if (k8sDir) {
+                // -------------------------------------------------------------
+                // SCAN 1: Trivy — full application image scan (all layers)
+                // Scans: OS packages, Java JARs inside image, npm packages, etc.
+                //
+                // Round 1: HIGH+CRITICAL shown, exit 0 (informational — full visibility)
+                // Round 2: CRITICAL only, exit 1 (blocks build on critical vulns)
+                //
+                // Uses local image via docker socket — no registry pull needed
+                // Trivy cache at /var/lib/jenkins/.trivy-cache avoids DB re-download
+                // -------------------------------------------------------------
+                "Trivy — Application Image Scan": {
+                    echo "🔍 Trivy Round 1: informational scan (HIGH+CRITICAL)..."
                     sh """
                         docker run --rm \
-                            -v "\$(pwd)":/project \
-                            openpolicyagent/conftest:latest test \
-                            --policy opa-k8s-security.rego \
-                            /project/${k8sDir}
+                            -v /var/run/docker.sock:/var/run/docker.sock \
+                            -v /var/lib/jenkins/.trivy-cache:/root/.cache/trivy \
+                            aquasec/trivy:latest \
+                            image \
+                            --quiet \
+                            --no-progress \
+                            --severity HIGH,CRITICAL \
+                            --exit-code 0 \
+                            ${localImageName} || true
                     """
-                    echo "✅ OPA K8s manifest scan passed"
-                } else {
-                    echo "⚠️  No k8s manifest directory found — skipping OPA K8s scan"
-                    echo "ℹ️  Expected directory: k8s/, k8s-manifest/, manifests/, or kubernetes/"
-                }
-            }
-        )
 
-        echo "✅ Application image scan passed"
-        return [success: true, imageName: imageName]
+                    echo "🔍 Trivy Round 2: enforcement scan (CRITICAL only — blocks build)..."
+                    sh """
+                        docker run --rm \
+                            -v /var/run/docker.sock:/var/run/docker.sock \
+                            -v /var/lib/jenkins/.trivy-cache:/root/.cache/trivy \
+                            aquasec/trivy:latest \
+                            image \
+                            --quiet \
+                            --no-progress \
+                            --severity CRITICAL \
+                            --exit-code 1 \
+                            ${localImageName}
+                    """
+                    echo "✅ Trivy scan passed (no CRITICAL CVEs)"
+                },
+
+                // -------------------------------------------------------------
+                // SCAN 2: OPA Conftest — K8s manifest security policies
+                // Scans k8s/ directory against opa-k8s-security.rego
+                // Skipped automatically if no k8s directory found in project
+                //
+                // Policies checked (opa-k8s-security.rego):
+                //   ✅ No root containers
+                //   ✅ runAsNonRoot: true
+                //   ✅ No privileged containers
+                //   ✅ Resource limits defined
+                //   ✅ No :latest image tags
+                //   ✅ readOnlyRootFilesystem: true
+                //   ✅ No dangerous hostPath mounts
+                // -------------------------------------------------------------
+                "OPA Conftest — K8s Manifest Policies": {
+                    echo "🔍 OPA: validating K8s manifests..."
+                    if (k8sDir) {
+                        sh """
+                            docker run --rm \
+                                -v "\$(pwd)":/project \
+                                openpolicyagent/conftest:latest test \
+                                --policy opa-k8s-security.rego \
+                                /project/${k8sDir}
+                        """
+                        echo "✅ OPA K8s manifest scan passed"
+                    } else {
+                        echo "⚠️  No k8s directory found — OPA K8s scan skipped"
+                        echo "ℹ️  Expected: k8s/, k8s-manifest/, manifests/, kubernetes/, or deploy/"
+                    }
+                }
+            )
+
+            echo "✅ Application image scan passed"
+            return [success: true, imageName: localImageName]
+
+        } finally {
+            // -----------------------------------------------------------------
+            // ALWAYS clean up local image after scan — success OR failure
+            // This is the correct place for cleanup:
+            //   ✅ Image was available for Trivy scan above
+            //   ✅ Harbor already has the image (pushed in stage 8)
+            //   ✅ Cleanup here prevents 100-500MB accumulating per build
+            // -----------------------------------------------------------------
+            echo "🧹 Removing local image after scan: ${localImageName}"
+            sh "docker rmi ${localImageName} || true"
+
+            // Cap Docker build cache at 2GB
+            // --reserved-space is the new flag name; fall back to --keep-storage for older Docker
+            sh "docker builder prune -f --reserved-space=2gb 2>/dev/null || docker builder prune -f --keep-storage=2gb 2>/dev/null || true"
+            echo "✅ Local image removed — disk kept clean"
+        }
 
     } catch (Exception e) {
         env.failedStage  = "Vulnerability Scan - Application Image"
@@ -133,10 +140,7 @@ def call(Map params = [:]) {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Auto-detect k8s manifest directory from common names
-// Returns directory name or null if none found
-// -----------------------------------------------------------------------------
 def detectK8sDir() {
     def candidates = ['k8s', 'k8s-manifest', 'manifests', 'kubernetes', 'deploy', 'k8s-temp']
     for (def dir : candidates) {

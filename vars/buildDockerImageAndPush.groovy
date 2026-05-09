@@ -1,12 +1,15 @@
 /**
  * buildDockerImageAndPush.groovy
  *
- * Builds a Docker image, pushes it to Harbor, then cleans up local images
- * so Jenkins disk stays clean (Harbor is the artifact store).
+ * Builds a Docker image, pushes it to Harbor, keeps local image for scanning.
  *
- * Disk management:
- *   - removeAfterPush: true  → removes both local tag AND registry tag after push
- *   - builder prune          → caps Docker build cache at 2GB
+ * IMPORTANT — image cleanup flow:
+ *   Stage 8: buildDockerImageAndPush  → builds + pushes → KEEPS local image
+ *   Stage 9: vulnScanApplicationImage → scans local image → REMOVES it after scan
+ *
+ *   removeAfterPush defaults to FALSE so the image exists for stage 9 to scan.
+ *   vulnScanApplicationImage does the cleanup after scanning completes.
+ *   Never scan the Harbor registry URL — use the local image tag for Trivy.
  *
  * Usage:
  *   def result = buildDockerImageAndPush(
@@ -15,13 +18,10 @@
  *       harborProject:          env.HARBOR_PROJECT,
  *       registryUrl:            env.REGISTRY_URL,
  *       registryCredentialsId:  env.REGISTRY_CREDENTIALS_ID,
- *       pushToRegistry:         true,
- *       buildArgs: [
- *           GIT_AUTHOR : env.GIT_AUTHOR,
- *           VERSION    : "1.0.${env.BUILD_NUMBER}"
- *       ]
+ *       pushToRegistry:         true
  *   )
- *   env.FINAL_IMAGE_NAME = result.localImageName  // used by vulnScanApplicationImage
+ *   env.FINAL_IMAGE_NAME = result.localImageName  // e.g. "soft-aml-branding-service:42"
+ *                                                 // used by vulnScanApplicationImage
  */
 def call(Map params = [:]) {
 
@@ -34,25 +34,34 @@ def call(Map params = [:]) {
     def dockerfilePath        = params.dockerfilePath        ?: 'Dockerfile'
     def buildContext          = params.buildContext          ?: '.'
     def buildArgs             = params.buildArgs             ?: [:]
-    def dockerTarget          = params.dockerTarget          ?: ''   // multi-stage --target
+    def dockerTarget          = params.dockerTarget          ?: ''
     def pushToRegistry        = params.pushToRegistry        ?: false
-    def removeAfterPush       = params.removeAfterPush       ?: true  // keep disk clean
-    def failOnError           = params.containsKey('failOnError') ? params.failOnError : true
 
+    // -------------------------------------------------------------------------
+    // removeAfterPush defaults to FALSE
+    // The local image must stay alive so vulnScanApplicationImage (stage 9)
+    // can scan it with Trivy. vulnScanApplicationImage removes it after scanning.
+    // Only set removeAfterPush: true if you are NOT using vulnScanApplicationImage.
+    // -------------------------------------------------------------------------
+    def removeAfterPush = params.containsKey('removeAfterPush') ? params.removeAfterPush : false
+    def failOnError     = params.containsKey('failOnError')     ? params.failOnError     : true
+
+    // localImageName  = short tag used locally and for Trivy scanning
+    // registryImageName = full Harbor URL used for push
     def localImageName    = "${imageName}:${imageTag}"
     def registryImageName = registryUrl ? "${registryUrl}/${harborProject}/${imageName}:${imageTag}" : localImageName
 
     echo "=== Build Docker Image and Push ==="
-    echo "Image:          ${localImageName}"
+    echo "Local image:    ${localImageName}"
     echo "Registry image: ${registryImageName}"
     echo "Push to Harbor: ${pushToRegistry}"
+    echo "Remove after push: ${removeAfterPush} (false = keep for Trivy scan in next stage)"
 
     try {
         if (!fileExists(dockerfilePath)) {
             error "Dockerfile not found: ${dockerfilePath}"
         }
 
-        // Build --build-arg string from map
         def buildArgsString = buildArgs.collect { k, v -> "--build-arg ${k}='${v}'" }.join(' ')
         def targetFlag      = dockerTarget ? "--target ${dockerTarget}" : ''
 
@@ -66,7 +75,12 @@ def call(Map params = [:]) {
         """
         echo "✅ Built: ${localImageName}"
 
-        def result = [success: true, imageName: registryImageName, localImageName: localImageName, pushed: false]
+        def result = [
+            success        : true,
+            imageName      : registryImageName,
+            localImageName : localImageName,   // ← Trivy uses this (local, not Harbor URL)
+            pushed         : false
+        ]
 
         if (pushToRegistry) {
             if (!registryUrl)           error "registryUrl is required to push"
@@ -81,23 +95,25 @@ def call(Map params = [:]) {
                 sh "echo \$REGISTRY_PASS | docker login ${registryUrl} -u \$REGISTRY_USER --password-stdin"
                 sh "docker tag ${localImageName} ${registryImageName}"
                 sh "docker push ${registryImageName}"
+                // Remove registry-tagged copy immediately — we only need localImageName for scanning
+                sh "docker rmi ${registryImageName} || true"
             }
-            echo "✅ Pushed: ${registryImageName}"
+            echo "✅ Pushed and registry tag removed: ${registryImageName}"
             result.pushed = true
         }
 
-        // ─────────────────────────────────────────────────────────────────────
-        // DISK CLEANUP — critical for keeping Jenkins disk healthy
-        // Removes both the local tag and registry tag from Jenkins host
-        // Caps Docker build cache at 2GB to prevent gradual accumulation
-        // Without this: each build leaves 100-500MB of layers on disk
-        // ─────────────────────────────────────────────────────────────────────
-        if (removeAfterPush && pushToRegistry) {
-            echo "🧹 Removing local Docker images (Harbor has the image)..."
-            sh "docker rmi ${registryImageName} || true"   // remove registry-tagged copy
-            sh "docker rmi ${localImageName} || true"      // remove local-tagged copy
-            sh "docker builder prune -f --keep-storage=2gb || true"  // cap build cache at 2GB
-            echo "✅ Local images removed — disk kept clean"
+        // Local image (localImageName) is KEPT here intentionally
+        // vulnScanApplicationImage will scan it then remove it
+        if (removeAfterPush) {
+            // Only reached if caller explicitly sets removeAfterPush: true
+            // This means they are NOT using vulnScanApplicationImage
+            echo "🧹 Removing local image (removeAfterPush=true)..."
+            sh "docker rmi ${localImageName} || true"
+            sh "docker builder prune -f --reserved-space=2gb 2>/dev/null || docker builder prune -f --keep-storage=2gb 2>/dev/null || true"
+            echo "✅ Local image removed"
+        } else {
+            echo "ℹ️  Local image kept for Trivy scan: ${localImageName}"
+            echo "ℹ️  vulnScanApplicationImage will remove it after scanning"
         }
 
         echo "✅ Docker build and push complete"
