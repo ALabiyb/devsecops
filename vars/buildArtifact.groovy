@@ -1,8 +1,31 @@
-def call(Map params = [:]) {
-    // Determine build tool: param > env > auto-detect > default to maven
-        def buildTool = params.buildTool ?: env.BUILD_TOOL
-    try {
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def call(Map params = [:]) {
+    def buildTool = params.buildTool ?: env.BUILD_TOOL
+
+    try {
         if (!buildTool) {
             buildTool = detectBuildTool()
             echo "Auto-detected build tool: ${buildTool}"
@@ -10,7 +33,6 @@ def call(Map params = [:]) {
             echo "Using specified build tool: ${buildTool}"
         }
 
-        // Normalize to lowercase for switch
         def tool = buildTool.toLowerCase()
 
         switch (tool) {
@@ -32,7 +54,7 @@ def call(Map params = [:]) {
                 buildDotnet(params)
                 break
             default:
-                error "Unsupported or unknown build tool: ${buildTool}. Supported: maven, npm, go, gradle, dotnet"
+                error "Unsupported build tool: ${buildTool}"
         }
 
         return [success: true, buildTool: tool]
@@ -46,51 +68,19 @@ def call(Map params = [:]) {
     }
 }
 
-// Helper: Auto-detect based on common files
 def detectBuildTool() {
-    if (fileExists('pom.xml'))          return 'maven'
-    if (fileExists('package.json'))     return 'npm'
-    if (fileExists('go.mod'))           return 'go'
-    if (fileExists('build.gradle') || fileExists('build.gradle.kts')) return 'gradle'
-    if (fileExists('Makefile'))         return 'maven' // fallback or custom
-    return 'maven' // safe default
+    if (fileExists('pom.xml'))                                          return 'maven'
+    if (fileExists('package.json'))                                     return 'npm'
+    if (fileExists('go.mod'))                                           return 'go'
+    if (fileExists('build.gradle') || fileExists('build.gradle.kts'))  return 'gradle'
+    return 'maven'
 }
-
-// Maven build
-// def buildMaven(Map params) {
-//     echo "Stage: Build Artifact - Maven"
-//     sh 'java -version'
-//     sh 'mvn -version'
-
-//     def buildCmd = params.command ?: 'mvn clean package -DskipTests=true -B'
-//     echo "Running: ${buildCmd}"
-//     sh buildCmd
-
-//     def artifactPath = params.artifacts ?: 'target/*.jar'
-//     archiveArtifacts artifacts: artifactPath, fingerprint: true, allowEmptyArchive: false
-// }
-// def buildMaven(Map params) {
-//     echo "Stage: Build Artifact - Maven"
-
-//     def mvnHome = tool name: 'mave-3.9.15', type: 'maven'  // matches the name you set
-//     env.PATH = "${mvnHome}/bin:${env.PATH}"
-
-//     sh 'java -version'
-//     sh 'mvn -version'
-
-//     def buildCmd = params.command ?: 'mvn clean package -DskipTests=true -B'
-//     echo "Running: ${buildCmd}"
-//     sh buildCmd
-
-//     def artifactPath = params.artifacts ?: 'target/*.jar'
-//     archiveArtifacts artifacts: artifactPath, fingerprint: true, allowEmptyArchive: false
-// }
 
 def buildMaven(Map params) {
     echo "Stage: Build Artifact - Maven"
 
-    def mvnHome = tool name: 'mave-3.9.15', type: 'maven'
-    def javaHome = tool name: 'jdk21', type: 'jdk'
+    def mvnHome  = tool name: 'mave-3.9.15', type: 'maven'
+    def javaHome = tool name: 'jdk21',        type: 'jdk'
 
     withEnv(["PATH+MAVEN=${mvnHome}/bin", "PATH+JAVA=${javaHome}/bin", "JAVA_HOME=${javaHome}"]) {
         sh 'java -version'
@@ -101,12 +91,11 @@ def buildMaven(Map params) {
         echo "Running: ${buildCmd}"
         sh buildCmd
 
-        archiveArtifacts artifacts: (params.artifacts ?: 'target/*.jar'),
-                         fingerprint: true, allowEmptyArchive: false
+        // ✅ No archiveArtifacts - JAR is copied into Docker image, not stored in Jenkins
+        // ✅ Dependency check report is handled by dependencyCheckPublisher in post{}
     }
 }
 
-// NPM / Node.js / Next.js build
 def buildNpm(Map params) {
     echo "Stage: Build Artifact - NPM/Node.js"
     sh 'node --version'
@@ -118,18 +107,17 @@ def buildNpm(Map params) {
     echo "Installing dependencies: ${installCmd}"
     sh installCmd
 
-    if (params.buildCommand || fileExists('package.json') && sh(script: 'grep -q "\\"build\\"" package.json', returnStatus: true) == 0) {
+    if (params.buildCommand || fileExists('package.json') &&
+        sh(script: 'grep -q "\\"build\\"" package.json', returnStatus: true) == 0) {
         echo "Building: ${buildCmd}"
         sh buildCmd
     } else {
-        echo "No build script defined, skipping build step"
+        echo "No build script defined, skipping"
     }
 
-    def artifactPath = params.artifacts ?: 'dist/**, build/**, .next/**'
-    archiveArtifacts artifacts: artifactPath, fingerprint: true, allowEmptyArchive: true
+    // ✅ No archiveArtifacts - dist is copied into Docker image
 }
 
-// Go build
 def buildGo(Map params) {
     echo "Stage: Build Artifact - Go"
     sh 'go version'
@@ -138,11 +126,9 @@ def buildGo(Map params) {
     echo "Running: ${buildCmd}"
     sh buildCmd
 
-    def artifactPath = params.artifacts ?: 'app'
-    archiveArtifacts artifacts: artifactPath, fingerprint: true, allowEmptyArchive: false
+    // ✅ No archiveArtifacts - binary is copied into Docker image
 }
 
-// Gradle build
 def buildGradle(Map params) {
     echo "Stage: Build Artifact - Gradle"
     sh './gradlew --version'
@@ -151,11 +137,9 @@ def buildGradle(Map params) {
     echo "Running: ${buildCmd}"
     sh buildCmd
 
-    def artifactPath = params.artifacts ?: 'build/libs/*.jar'
-    archiveArtifacts artifacts: artifactPath, fingerprint: true, allowEmptyArchive: false
+    // ✅ No archiveArtifacts - JAR is copied into Docker image
 }
 
-// .NET build (example)
 def buildDotnet(Map params) {
     echo "Stage: Build Artifact - .NET"
     sh 'dotnet --version'

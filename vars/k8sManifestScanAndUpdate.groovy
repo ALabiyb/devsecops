@@ -20,9 +20,9 @@ def call(Map params = [:]) {
     def registryUrl = params.registryUrl ?: env.REGISTRY_URL ?: 'docker.io'
     def registryType = params.registryType ?: (env.REGISTRY_URL?.contains('harbor') ? 'harbor' : 'dockerhub')
     def privateRegistryUrl = params.privateRegistryUrl ?: (env.HARBOR_PROJECT ? "${registryUrl}/${env.HARBOR_PROJECT}" : '')
-    def gitEmail = params.gitEmail ?: 'jenkins@ci.com'
+    def gitEmail = params.gitEmail ?: 'donotreply@spftnet.co.tz'
     def gitName = params.gitName ?: 'Jenkins CI'
-    def commitMessage = params.commitMessage ?: "Update ${imageName} image to tag ${imageTag} [skip ci]"
+    def commitMessage = params.commitMessage ?: "Update ${imageName} image to tag ${imageTag}"
 
     echo "=== Updating Kubernetes Manifests with Security Scan ==="
     echo "Repository: ${repoUrl}"

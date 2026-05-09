@@ -82,6 +82,8 @@ def call(Map params = [:]) {
         if (removeAfterPush) {
             echo "🧹 Removing local Docker image..."
             sh "docker rmi ${registryImageName} || true"
+            sh "docker rmi ${localImageName} || true"
+    sh "docker builder prune -f --keep-storage=2gb || true"  // Keep max 2GB build cache
         }
 
         echo "✅ Docker image build and push process completed."
