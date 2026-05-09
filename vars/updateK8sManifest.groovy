@@ -1,285 +1,351 @@
 /**
  * updateK8sManifest.groovy
- * A Jenkins shared library function to update Kubernetes manifest files with new image tags
- * Enhanced to support both GitLab (HTTPS) and Gitea (HTTP) repositories
+ *
+ * Updates Kubernetes manifest files with new Docker image tags, then
+ * commits and pushes back to the k8s manifest repository.
+ *
+ * KEY BEHAVIORS (prevents silent success):
+ *   - Pre-flight: verifies ALL manifest files exist BEFORE making any changes
+ *   - Missing file → sends warning email + PAUSES pipeline for up to 30 minutes
+ *     → human clicks Proceed (after fixing) or Abort in Jenkins UI
+ *     → auto-fails if no action within 30 minutes
+ *   - Image update verification fails → IMMEDIATE pipeline FAILURE
+ *   - No files updated → IMMEDIATE pipeline FAILURE
+ *   - NEVER returns success unless all files were actually updated and verified
+ *
+ * Pre-flight means: only the files listed in K8S_MANIFEST_PATHS are checked,
+ * not all files in the repo.
+ *
+ * Usage:
+ *   updateK8sManifest()   // uses all env vars from Jenkinsfile
+ *
+ *   updateK8sManifest(
+ *       waitMinutes: 15,  // override default 30-minute pause
+ *       k8sDir: 'deploy/' // optional: dir to scan if using k8sManifestScanAndUpdate
+ *   )
  */
 def call(Map params = [:]) {
-    // Extract parameters with default values (falling back to environment variables)
-    def repoUrl = params.repoUrl ?: env.K8S_MANIFEST_REPO_URL ?: error("repoUrl is required")
-    
-    // Support single path (manifestPath) or comma-separated list (K8S_MANIFEST_PATHS)
-    def manifestPath = params.manifestPath ?: env.K8S_MANIFEST_PATHS ?: 'deployment.yaml'
+
+    def repoUrl           = params.repoUrl         ?: env.K8S_MANIFEST_REPO_URL         ?: error("K8S_MANIFEST_REPO_URL is required")
+    def manifestPath      = params.manifestPath    ?: env.K8S_MANIFEST_PATHS             ?: 'deployment.yaml'
+    def branch            = params.branch          ?: env.K8S_MANIFEST_BRANCH            ?: 'main'
+    def credentialsId     = params.credentialsId   ?: env.K8S_MANIFEST_CREDENTIALS_ID   ?: error("K8S_MANIFEST_CREDENTIALS_ID is required")
+    def imageName         = params.imageName       ?: env.IMAGE_NAME                     ?: error("IMAGE_NAME is required")
+    def imageTag          = params.imageTag        ?: env.BUILD_NUMBER                   ?: 'latest'
+    def registryUrl       = params.registryUrl     ?: env.REGISTRY_URL                  ?: 'docker.io'
+    def registryType      = params.registryType    ?: (env.REGISTRY_URL?.contains('harbor') ? 'harbor' : 'dockerhub')
+    def privateRegistryUrl = params.privateRegistryUrl ?: (env.HARBOR_PROJECT ? "${registryUrl}/${env.HARBOR_PROJECT}" : '')
+    def gitEmail          = params.gitEmail        ?: 'donotreply@softnet.co.tz'
+    def gitName           = params.gitName         ?: 'Jenkins CI'
+    def commitMessage     = params.commitMessage   ?: "Update ${imageName} image to tag ${imageTag}"
+    def waitMinutes       = params.waitMinutes     ?: 30   // pause duration when file not found
+    def notificationEmail = params.notificationEmail ?: env.NOTIFICATION_EMAIL ?: ''
+
+    // Normalize manifestPath to List (supports single string or comma-separated)
     if (manifestPath instanceof String && manifestPath.contains(',')) {
         manifestPath = manifestPath.split(',').collect { it.trim() }
     }
-    
-    def branch = params.branch ?: env.K8S_MANIFEST_BRANCH ?: 'main'
-    def credentialsId = params.credentialsId ?: env.K8S_MANIFEST_CREDENTIALS_ID ?: error("credentialsId is required (pass parameter or set env.K8S_MANIFEST_CREDENTIALS_ID)")
-    def imageName = params.imageName ?: env.IMAGE_NAME ?: error("imageName is required (pass parameter or set env.IMAGE_NAME)")
-    def imageTag = params.imageTag ?: env.BUILD_NUMBER ?: 'latest'
-    def registryUrl = params.registryUrl ?: env.REGISTRY_URL ?: 'docker.io'
-    def registryType = params.registryType ?: (env.REGISTRY_URL?.contains('harbor') ? 'harbor' : 'dockerhub')
-    def privateRegistryUrl = params.privateRegistryUrl ?: (env.HARBOR_PROJECT ? "${registryUrl}/${env.HARBOR_PROJECT}" : '')
-    def gitEmail = params.gitEmail ?: 'donotreply@softnet.co.tz'
-    def gitName = params.gitName ?: 'Jenkins CI'
-    def commitMessage = params.commitMessage ?: "Update ${imageName} image to tag ${imageTag}"
-
-    echo "=== Updating Kubernetes Manifests ==="
-    echo "Repository: ${repoUrl}"
-    echo "Manifest Paths: ${manifestPath instanceof List ? manifestPath.join(', ') : manifestPath}"
-    echo "Branch: ${branch}"
-    echo "Image: ${imageName}:${imageTag}"
-    echo "Registry Type: ${registryType}"
-
-    // Ensure manifestPath is a list (support both single and multiple paths)
     if (!(manifestPath instanceof List)) {
         manifestPath = [manifestPath]
     }
 
-    // Initialize variables
+    echo "=== Updating Kubernetes Manifests ==="
+    echo "Repository:     ${repoUrl}"
+    echo "Branch:         ${branch}"
+    echo "Manifest paths: ${manifestPath.join(', ')}"
+    echo "Image:          ${imageName}:${imageTag}"
+
     def tempDir = "${env.WORKSPACE}/manifest-repo"
-    
+
     try {
-        // Calculate final image name based on registry type
         def finalImageName = getFinalImageName(registryType, imageName, imageTag, registryUrl, privateRegistryUrl)
-        echo "Final Image Name: ${finalImageName}"
+        echo "Final image: ${finalImageName}"
 
-        // Clone the manifest repository
+        // Clone the k8s manifest repo
         sh "rm -rf ${tempDir} || true"
-
-        echo "Cloning repository: ${repoUrl}"
-
         withCredentials([usernamePassword(
             credentialsId: credentialsId,
             usernameVariable: 'GIT_USERNAME',
             passwordVariable: 'GIT_PASSWORD'
         )]) {
-            // Get repository information dynamically
             def repoInfo = getRepoInfo(repoUrl)
-            echo "Repository protocol: ${repoInfo.protocol}"
-            echo "Repository domain: ${repoInfo.domain}"
-            
-            // Clone using the appropriate protocol
             if (repoInfo.protocol == 'https') {
-                // For HTTPS repositories (GitLab, GitHub, etc.)
                 sh """
-                    # Try normal clone first
-                    git clone --depth 1 --branch ${branch} https://\${GIT_USERNAME}:\${GIT_PASSWORD}@${repoInfo.domain} ${tempDir} || 
-                    (echo "Trying with SSL verification disabled..." && 
-                     git -c http.sslVerify=false clone --depth 1 --branch ${branch} https://\${GIT_USERNAME}:\${GIT_PASSWORD}@${repoInfo.domain} ${tempDir}) || 
-                    (echo "Clone failed - checking repository access..." && 
-                     git ls-remote https://\${GIT_USERNAME}:\${GIT_PASSWORD}@${repoInfo.domain} && 
-                     exit 1)
+                    git clone --depth 1 --branch ${branch} https://\${GIT_USERNAME}:\${GIT_PASSWORD}@${repoInfo.domain} ${tempDir} ||
+                    (git -c http.sslVerify=false clone --depth 1 --branch ${branch} https://\${GIT_USERNAME}:\${GIT_PASSWORD}@${repoInfo.domain} ${tempDir}) ||
+                    (git ls-remote https://\${GIT_USERNAME}:\${GIT_PASSWORD}@${repoInfo.domain} && exit 1)
                 """
             } else {
-                // For HTTP repositories (Gitea, local repos, etc.)
                 sh """
-                    # Try HTTP clone
-                    git clone --depth 1 --branch ${branch} http://\${GIT_USERNAME}:\${GIT_PASSWORD}@${repoInfo.domain} ${tempDir} || 
-                    (echo "HTTP clone failed - checking repository access..." && 
-                     git ls-remote http://\${GIT_USERNAME}:\${GIT_PASSWORD}@${repoInfo.domain} && 
-                     exit 1)
+                    git clone --depth 1 --branch ${branch} http://\${GIT_USERNAME}:\${GIT_PASSWORD}@${repoInfo.domain} ${tempDir} ||
+                    (git ls-remote http://\${GIT_USERNAME}:\${GIT_PASSWORD}@${repoInfo.domain} && exit 1)
                 """
             }
         }
 
-        // Process each manifest file
-        def updatedFiles = []
+        // -------------------------------------------------------------------------
+        // PRE-FLIGHT CHECK — verify ALL files exist BEFORE making any changes
+        // Only checks files listed in K8S_MANIFEST_PATHS (not all repo files)
+        // Prevents partial updates where some files are updated and others aren't
+        // -------------------------------------------------------------------------
+        def missingFiles = []
         manifestPath.each { singlePath ->
             def manifestFile = "${tempDir}/${singlePath}"
-            
-            // Verify the manifest file exists
             if (!fileExists(manifestFile)) {
-                echo "Warning: Manifest file not found at path: ${manifestFile}. Skipping."
-                return  // continue to next file
+                missingFiles.add(singlePath)
+                echo "⚠️  NOT FOUND: ${manifestFile}"
+            } else {
+                echo "✅ Found: ${manifestFile}"
             }
+        }
 
-            echo "Updating image in manifest file: ${manifestFile}"
+        if (missingFiles) {
+            // Notify team immediately via email
+            sendManifestWarningNotification(
+                missingFiles: missingFiles,
+                repoUrl: repoUrl,
+                branch: branch,
+                imageName: imageName,
+                imageTag: imageTag,
+                notificationEmail: notificationEmail
+            )
 
-            // Smart image update logic with better handling for commented lines and multiple containers
+            // Pause pipeline — human must fix the issue and click Proceed
+            echo "⏸️  Pipeline PAUSED — waiting up to ${waitMinutes} minutes for action"
+            echo "ℹ️  Go to Jenkins UI → this build → Input Required → Proceed or Abort"
+
+            try {
+                timeout(time: waitMinutes, unit: 'MINUTES') {
+                    input(
+                        message: """
+⚠️  MANIFEST FILES NOT FOUND — ACTION REQUIRED
+
+Missing file(s):
+${missingFiles.collect { "  • ${it}" }.join('\n')}
+
+Repository: ${repoUrl}
+Branch:     ${branch}
+
+Steps to fix:
+  1. Check K8S_MANIFEST_PATHS value is correct
+  2. Verify the file exists in the repo at the correct path
+  3. Push the fix to branch: ${branch}
+
+Then click PROCEED, or click ABORT to fail now.
+                        """,
+                        ok: 'Proceed — files have been fixed'
+                    )
+                }
+
+                // Human clicked Proceed — re-validate
+                echo "✅ Approved — re-validating files..."
+                missingFiles.each { singlePath ->
+                    // Re-pull the repo to pick up any changes made during the pause
+                    sh "cd ${tempDir} && git pull origin ${branch} || true"
+                    def manifestFile = "${tempDir}/${singlePath}"
+                    if (!fileExists(manifestFile)) {
+                        env.failedStage  = "k8s Manifest Update"
+                        env.failedReason = "File still not found after approval: ${singlePath}"
+                        error "❌ Still not found: ${singlePath}\nPush the file to ${repoUrl} branch ${branch} then retry"
+                    }
+                }
+                echo "✅ All files verified — continuing"
+
+            } catch (org.jenkinsci.plugins.workflow.steps.FlowInterruptedException e) {
+                env.failedStage  = "k8s Manifest Update"
+                env.failedReason = "Manifest file(s) not found, no action in ${waitMinutes} minutes: ${missingFiles.join(', ')}"
+                error "❌ Pipeline failed: manifest file(s) not found — ${missingFiles.join(', ')}"
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // UPDATE — update image tag in each manifest file
+        // -------------------------------------------------------------------------
+        def updatedFiles = []
+
+        manifestPath.each { singlePath ->
+            def manifestFile = "${tempDir}/${singlePath}"
+
             sh """#!/bin/bash
                 set -e
-                
                 MANIFEST_FILE="${manifestFile}"
                 FINAL_IMAGE="${finalImageName}"
-                IMAGE_NAME="${imageName}"
-                
-                echo "Processing manifest file: \$MANIFEST_FILE"
-                echo "Target image: \$FINAL_IMAGE"
-                echo "Looking for image name: \$IMAGE_NAME"
-                
-                # Extract the base image name (last part after /)
-                IMAGE_BASE_NAME=\$(echo "\$IMAGE_NAME" | awk -F/ '{print \$NF}' | cut -d: -f1)
-                echo "Image base name to search for: \$IMAGE_BASE_NAME"
-                
-                # Count non-commented image lines (must have whitespace before image:)
+                IMAGE_BASE_NAME=\$(echo "${imageName}" | awk -F/ '{print \$NF}' | cut -d: -f1)
+
+                echo "Updating \$MANIFEST_FILE with \$FINAL_IMAGE"
+
                 IMAGE_COUNT=\$(grep -E '^[[:space:]]+image:' "\$MANIFEST_FILE" | wc -l)
-                echo "Found \$IMAGE_COUNT image lines (non-commented) in the manifest"
-                
-                # Backup the original file
-                cp "\$MANIFEST_FILE" "\$MANIFEST_FILE.backup"
-                
+
                 if [ "\$IMAGE_COUNT" -eq 0 ]; then
-                    echo "❌ No image lines found in the manifest!"
+                    echo "❌ No image: lines found in \$MANIFEST_FILE"
                     exit 1
                 fi
-                
-                # Try to find and update only lines containing our image name
+
+                cp "\$MANIFEST_FILE" "\$MANIFEST_FILE.backup"
+
                 if grep -E "^[[:space:]]+image:.*\$IMAGE_BASE_NAME" "\$MANIFEST_FILE" > /dev/null; then
-                    echo "✔️  Found image containing '\$IMAGE_BASE_NAME' - updating only those lines"
-                    # Update only lines that contain our image base name
                     sed -i "/^[[:space:]]*image:.*\$IMAGE_BASE_NAME/{s|image:.*|image: \$FINAL_IMAGE|g}" "\$MANIFEST_FILE"
+                elif [ "\$IMAGE_COUNT" -eq 1 ]; then
+                    sed -i "/^[[:space:]]*image:/{s|image:.*|image: \$FINAL_IMAGE|g}" "\$MANIFEST_FILE"
                 else
-                    # If no matching image name found, but we have exactly 1 image, update it
-                    if [ "\$IMAGE_COUNT" -eq 1 ]; then
-                        echo "⚠️  No image with '\$IMAGE_BASE_NAME' found, but found 1 image line - updating it"
-                        sed -i "/^[[:space:]]*image:/{s|image:.*|image: \$FINAL_IMAGE|g}" "\$MANIFEST_FILE"
-                    else
-                        echo "❌ Multiple images found but none match '\$IMAGE_BASE_NAME':"
-                        grep "^[[:space:]]*image:" "\$MANIFEST_FILE"
-                        exit 1
-                    fi
+                    echo "❌ Multiple image lines found but none match '\$IMAGE_BASE_NAME':"
+                    grep "^[[:space:]]*image:" "\$MANIFEST_FILE"
+                    exit 1
                 fi
-                
-                echo "Update completed. Current image lines:"
-                grep "image:" "\$MANIFEST_FILE" || true
-                
-                # Verify the update worked (check for the final image anywhere in image lines)
+
                 if grep "image: \$FINAL_IMAGE" "\$MANIFEST_FILE" > /dev/null; then
-                    echo "✅ Image update verified in manifest"
+                    echo "✅ Verified: image updated to \$FINAL_IMAGE"
                 else
-                    echo "❌ Failed to update image in manifest!"
-                    echo "Expected to find: image: \$FINAL_IMAGE"
-                    echo "Found:"
-                    grep "image:" "\$MANIFEST_FILE" || echo "[no image lines found]"
+                    echo "❌ Verification FAILED — restoring backup"
+                    cp "\$MANIFEST_FILE.backup" "\$MANIFEST_FILE"
                     exit 1
                 fi
             """
 
-            // Verify the change was made
+            // Double-check from Groovy side
             def updatedContent = sh(script: "grep 'image:' '${manifestFile}'", returnStdout: true).trim()
-            echo "Updated image lines in manifest: ${updatedContent}"
-
             if (!updatedContent.contains(finalImageName)) {
-                error "Failed to update image in manifest file ${manifestFile}. Expected to find: ${finalImageName}"
+                env.failedStage  = "k8s Manifest Update"
+                env.failedReason = "Image verification failed in ${singlePath}"
+                error "❌ Update verification failed in ${singlePath}\nExpected: ${finalImageName}\nFound: ${updatedContent}"
             }
 
-            updatedFiles.add([
-                path: singlePath,
-                file: manifestFile,
-                updatedContent: updatedContent
-            ])
+            updatedFiles.add([path: singlePath, file: manifestFile])
+            echo "✅ Updated: ${singlePath}"
         }
 
         if (updatedFiles.isEmpty()) {
-            error "No manifest files were successfully updated."
+            env.failedStage  = "k8s Manifest Update"
+            env.failedReason = "No manifest files were updated"
+            error "❌ No manifest files were updated"
         }
 
-        // Commit and push the changes
+        // -------------------------------------------------------------------------
+        // COMMIT AND PUSH
+        // -------------------------------------------------------------------------
         dir(tempDir) {
             withCredentials([usernamePassword(
                 credentialsId: credentialsId,
-                usernameVariable: 'GIT_USERNAME', 
+                usernameVariable: 'GIT_USERNAME',
                 passwordVariable: 'GIT_PASSWORD'
             )]) {
                 def repoInfo = getRepoInfo(repoUrl)
-                def protocol = repoInfo.protocol
-                def domain = repoInfo.domain
-                
                 sh """
-                    # Configure git user
                     git config user.email "${gitEmail}"
                     git config user.name "${gitName}"
-                    
-                    # Update remote URL with credentials for pushing using the correct protocol
-                    git remote set-url origin ${protocol}://\${GIT_USERNAME}:\${GIT_PASSWORD}@${domain}
-                    
-                    # Add all updated manifest files
+                    git remote set-url origin ${repoInfo.protocol}://\${GIT_USERNAME}:\${GIT_PASSWORD}@${repoInfo.domain}
+
                     ${updatedFiles.collect { "git add \"${it.path}\"" }.join('\n                    ')}
-                    
-                    # Check if there are changes to commit
+
                     if git diff --cached --quiet; then
-                        echo "No changes to commit - images might already be up to date"
+                        echo "ℹ️  No changes — image tag was already up to date"
                     else
                         git commit -m "${commitMessage}"
-                        echo "Pushing changes to repository..."
                         git push origin HEAD:${branch}
-                        echo "✅ Changes pushed successfully"
+                        echo "✅ Pushed manifest update to ${branch}"
                     fi
                 """
             }
         }
 
-        echo "✅ Successfully updated ${updatedFiles.size()} manifest file(s) with image: ${finalImageName}"
-        
-        return [
-            success: true,
-            finalImageName: finalImageName,
-            updatedFiles: updatedFiles
-        ]
+        echo "✅ K8s manifest update complete — image: ${finalImageName}"
+        return [success: true, finalImageName: finalImageName, updatedFiles: updatedFiles]
 
     } catch (Exception e) {
-        echo "❌ Failed to update manifest: ${e.getMessage()}"
-        return [
-            success: false,
-            error: e.getMessage(),
-            errorType: 'MANIFEST_UPDATE_ERROR'
-        ]
+        if (!env.failedStage) {
+            env.failedStage  = "k8s Manifest Update"
+            env.failedReason = e.getMessage()
+        }
+        echo "❌ K8s manifest update failed: ${e.getMessage()}"
+        currentBuild.result = 'FAILURE'
+        throw e   // always re-throw — NEVER silently succeed
+
     } finally {
-        // Clean up temporary directory
         sh "rm -rf ${tempDir} || true"
     }
 }
 
-/**
- * Helper function to get final image name based on registry type
- */
-def getFinalImageName(registryType, imageName, imageTag, registryUrl = 'docker.io', privateRegistryUrl = '') {
-    switch(registryType.toLowerCase()) {
-        case 'dockerhub':
-            return "docker.io/${imageName}:${imageTag}"
-        case 'harbor':
-        case 'private':
-            if (!privateRegistryUrl) {
-                error "privateRegistryUrl is required for harbor/private registry type"
-            }
-            return "${privateRegistryUrl}/${imageName}:${imageTag}"
-        default:
-            return "${imageName}:${imageTag}"
+// -----------------------------------------------------------------------------
+// Sends a warning email when manifest files are not found
+// Called before the input() pause so team is notified immediately
+// -----------------------------------------------------------------------------
+def sendManifestWarningNotification(Map params) {
+    def missingFiles      = params.missingFiles      ?: []
+    def repoUrl           = params.repoUrl           ?: 'unknown'
+    def branch            = params.branch            ?: 'main'
+    def imageName         = params.imageName         ?: 'unknown'
+    def imageTag          = params.imageTag          ?: 'unknown'
+    def notificationEmail = params.notificationEmail ?: ''
+
+    if (!notificationEmail) {
+        echo "⚠️  No NOTIFICATION_EMAIL set — skipping warning email"
+        return
+    }
+
+    try {
+        emailext(
+            subject: "⚠️  ACTION REQUIRED: K8s Manifest File Not Found — ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+            body: """
+            <!DOCTYPE html><html><head>
+            <style>
+                body{font-family:'Segoe UI',sans-serif;background:#f8f9fa;margin:0;padding:20px}
+                .container{max-width:600px;margin:auto;background:white;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,.1);border:3px solid #ffc107}
+                .header{background:linear-gradient(135deg,#ffc107,#e0a800);color:#212529;padding:30px;text-align:center}
+                .content{padding:30px;line-height:1.6;color:#333}
+                .warning-box{background:#fff3cd;border:1px solid #ffc107;border-radius:8px;padding:20px;margin:20px 0;border-left:5px solid #ffc107}
+                .steps{background:#e8f5e9;border-radius:8px;padding:15px;margin:20px 0}
+                .btn{display:inline-block;background:#ffc107;color:#212529;padding:12px 28px;text-decoration:none;border-radius:30px;font-weight:bold}
+                code{background:#f1f1f1;padding:2px 6px;border-radius:4px}
+            </style></head><body>
+            <div class="container">
+                <div class="header"><h1>⚠️ Action Required</h1><p>K8s Manifest File Not Found — Pipeline Paused</p></div>
+                <div class="content">
+                    <p>Hello <strong>Team</strong>,</p>
+                    <p>The pipeline is <strong>paused</strong> because these manifest file(s) were not found:</p>
+                    <div class="warning-box">
+                        <strong>Missing File(s):</strong>
+                        <ul>${missingFiles.collect { "<li><code>${it}</code></li>" }.join('')}</ul>
+                        <p><strong>Repository:</strong> ${repoUrl}</p>
+                        <p><strong>Branch:</strong> ${branch}</p>
+                        <p><strong>Deploying image:</strong> ${imageName}:${imageTag}</p>
+                        <p><strong>Job:</strong> ${env.JOB_NAME} #${env.BUILD_NUMBER}</p>
+                    </div>
+                    <div class="steps">
+                        <strong>How to fix:</strong>
+                        <ol>
+                            <li>Verify <code>K8S_MANIFEST_PATHS</code> path is correct in Jenkinsfile</li>
+                            <li>Confirm file exists in repo at the correct path</li>
+                            <li>Confirm branch is <code>${branch}</code></li>
+                            <li>Push the fix, then click <strong>Proceed</strong> in Jenkins</li>
+                        </ol>
+                        <p>⏱️ Pipeline auto-fails if no action is taken.</p>
+                    </div>
+                    <p><a href="${env.BUILD_URL}input" class="btn">Go to Jenkins → Take Action</a></p>
+                </div>
+            </div></body></html>
+            """,
+            to: notificationEmail,
+            mimeType: 'text/html'
+        )
+        echo "⚠️  Warning email sent to: ${notificationEmail}"
+    } catch (Exception e) {
+        echo "⚠️  Failed to send warning email (continuing): ${e.getMessage()}"
     }
 }
 
-/**
- * Helper function to extract repository information dynamically
- * Handles both HTTP and HTTPS repositories
- */
-def getRepoInfo(repoUrl) {
-    def protocol = 'https' // default to HTTPS
-    def domain = ''
-    
-    // Extract protocol and domain
-    if (repoUrl.startsWith('https://')) {
-        protocol = 'https'
-        domain = repoUrl.replaceFirst('https://', '')
-    } else if (repoUrl.startsWith('http://')) {
-        protocol = 'http'
-        domain = repoUrl.replaceFirst('http://', '')
-    } else {
-        // Assume HTTPS if no protocol specified
-        protocol = 'https'
-        domain = repoUrl
+def getFinalImageName(registryType, imageName, imageTag, registryUrl = 'docker.io', privateRegistryUrl = '') {
+    switch (registryType.toLowerCase()) {
+        case 'dockerhub': return "docker.io/${imageName}:${imageTag}"
+        case 'harbor':
+        case 'private':
+            if (!privateRegistryUrl) error "privateRegistryUrl is required for harbor registry"
+            return "${privateRegistryUrl}/${imageName}:${imageTag}"
+        default: return "${imageName}:${imageTag}"
     }
-    
-    // Remove .git suffix if present
-    //domain = domain.replaceFirst(/\.git$/, '')
-    
-    echo "Repository analysis:"
-    echo "  Original URL: ${repoUrl}"
-    echo "  Protocol: ${protocol}"
-    echo "  Domain: ${domain}"
-    
-    return [
-        protocol: protocol,
-        domain: domain
-    ]
+}
+
+def getRepoInfo(repoUrl) {
+    def protocol = repoUrl.startsWith('http://') ? 'http' : 'https'
+    def domain   = repoUrl.replaceFirst(/https?:\/\//, '')
+    return [protocol: protocol, domain: domain]
 }
