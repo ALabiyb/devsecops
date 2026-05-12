@@ -1,0 +1,57 @@
+# =============================================================================
+# Production Dockerfile — Node.js Express / NestJS API
+# Use this when your Node.js project is a BACKEND API (not a frontend app).
+# For frontend React/Next.js projects use Dockerfile.react-nginx instead.
+# Runs as non-root user — satisfies OPA security policy
+# =============================================================================
+
+FROM node:20-alpine
+
+ARG GIT_AUTHOR=unknown
+ARG GIT_COMMIT=unknown
+ARG BUILD_DATE=unknown
+ARG VERSION=unknown
+ARG APP_TIMEZONE=Africa/Dar_es_Salaam
+
+LABEL org.opencontainers.image.title="Node.js API" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.revision="${GIT_COMMIT}" \
+      org.opencontainers.image.authors="${GIT_AUTHOR}"
+
+ENV TZ=${APP_TIMEZONE}
+RUN apk add --no-cache tzdata && \
+    cp /usr/share/zoneinfo/${APP_TIMEZONE} /etc/localtime && \
+    echo "${APP_TIMEZONE}" > /etc/timezone && \
+    apk del tzdata
+
+# NODE_ENV=production: tells npm to skip devDependencies
+# and enables production optimizations in Express/NestJS
+ENV NODE_ENV=production
+
+WORKDIR /app
+
+# Create non-root user before installing dependencies
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+# Copy package files and install production dependencies only
+# npm ci --omit=dev skips devDependencies (test frameworks, build tools, etc.)
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --frozen-lockfile && \
+    npm cache clean --force
+
+# Copy application source
+COPY . .
+
+RUN chown -R appuser:appgroup /app
+
+USER appuser
+
+EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD wget -qO- http://localhost:3000/health || exit 1
+
+# Use node directly — not npm start — to get proper signal handling
+# (npm wraps node and can cause issues with SIGTERM in Kubernetes)
+CMD ["node", "src/main.js"]

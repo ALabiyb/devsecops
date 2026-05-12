@@ -1,0 +1,79 @@
+# =============================================================================
+# Production Dockerfile — .NET ASP.NET Core
+# Multi-stage: SDK for building, ASP.NET runtime only for running
+# Runs as non-root user — satisfies OPA security policy
+#
+# WHY MULTI-STAGE FOR .NET?
+#   Build stage uses the full .NET SDK (~700MB) to compile the app.
+#   Runtime stage uses only the ASP.NET runtime (~200MB) — no SDK, no compiler.
+#   This follows Microsoft's official production recommendation.
+# =============================================================================
+
+# ── STAGE 1: BUILD ────────────────────────────────────────────────────────────
+FROM mcr.microsoft.com/dotnet/sdk:8.0-alpine AS builder
+
+WORKDIR /app
+
+# Copy project file and restore dependencies first — better layer caching
+# Only re-runs restore when .csproj changes, not on every code change
+COPY *.csproj ./
+RUN dotnet restore
+
+# Copy source and publish
+COPY . .
+RUN dotnet publish \
+    --configuration Release \
+    --output /app/publish \
+    --no-restore \
+    /p:UseAppHost=false
+
+# ── STAGE 2: RUNTIME ─────────────────────────────────────────────────────────
+# ASP.NET runtime only — no SDK, no compiler in the final image
+FROM mcr.microsoft.com/dotnet/aspnet:8.0-alpine
+
+ARG GIT_AUTHOR=unknown
+ARG GIT_COMMIT=unknown
+ARG BUILD_DATE=unknown
+ARG VERSION=unknown
+ARG APP_TIMEZONE=Africa/Dar_es_Salaam
+
+LABEL org.opencontainers.image.title=".NET Microservice" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.revision="${GIT_COMMIT}" \
+      org.opencontainers.image.authors="${GIT_AUTHOR}"
+
+# Set timezone
+ENV TZ=${APP_TIMEZONE}
+RUN apk add --no-cache tzdata && \
+    cp /usr/share/zoneinfo/${APP_TIMEZONE} /etc/localtime && \
+    echo "${APP_TIMEZONE}" > /etc/timezone && \
+    apk del tzdata
+
+# ASP.NET Core configuration
+# Use port 8080 so the app runs on non-privileged port
+ENV ASPNETCORE_URLS=http://+:8080
+ENV ASPNETCORE_ENVIRONMENT=Production
+ENV DOTNET_RUNNING_IN_CONTAINER=true
+# Faster startup — skips some validation steps safe to skip in containers
+ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false
+
+WORKDIR /app
+
+# Create non-root user
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+# Copy published output from build stage
+COPY --from=builder /app/publish .
+
+RUN chown -R appuser:appgroup /app
+
+USER appuser
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD wget -qO- http://localhost:8080/health || exit 1
+
+# Replace YourApp.dll with your actual project DLL name
+ENTRYPOINT ["dotnet", "YourApp.dll"]

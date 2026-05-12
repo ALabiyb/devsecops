@@ -1,6 +1,6 @@
 # =============================================================================
 # Production Dockerfile — Spring Boot Java Microservice
-# Matches: All Java Spring Boot services
+# Matches: SoftAML Branding Service (and all other Java Spring Boot services)
 # Base:    eclipse-temurin:21-jre-alpine (JRE only, not JDK — smaller image)
 # =============================================================================
 
@@ -18,16 +18,15 @@ ARG GIT_COMMIT=unknown
 ARG BUILD_DATE=unknown
 ARG VERSION=unknown
 ARG APP_TIMEZONE=Africa/Dar_es_Salaam
-ARG APP_NAME=unknown
 
 # ── LABELS (image metadata) ───────────────────────────────────────────────────
 # OCI standard labels — visible in Harbor and docker inspect
-LABEL org.opencontainers.image.title="${APP_NAME}" \
+LABEL org.opencontainers.image.title="SoftAML Branding Service" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.revision="${GIT_COMMIT}" \
       org.opencontainers.image.authors="${GIT_AUTHOR}" \
-      org.opencontainers.image.vendor="Softnet Technologies Limited"
+      org.opencontainers.image.vendor="Softnet"
 
 # ── TIMEZONE ──────────────────────────────────────────────────────────────────
 ENV TZ=${APP_TIMEZONE}
