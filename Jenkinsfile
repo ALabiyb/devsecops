@@ -262,7 +262,17 @@ pipeline {
             }
         }
 
-        // ── 10. K8S MANIFEST UPDATE ───────────────────────────────────────────
+
+        // ── 10. PUBLISH SECURITY RESULTS ──────────────────────────────────────
+        // Publish here — BEFORE k8s manifest update
+        // So even if k8s update fails, results are already in DefectDojo
+        stage('Publish Security Results') {
+            steps {
+                script { publishToDefectDojo() }
+            }
+        }
+
+        // ── 11. K8S MANIFEST UPDATE ───────────────────────────────────────────
         // Two options — choose ONE:
         //
         // Option A: updateK8sManifest()
@@ -303,12 +313,6 @@ pipeline {
                 } else {
                     echo "ℹ️  No dependency-check-report.xml — skipping (non-Maven project uses npm audit / govulncheck)"
                 }
-
-                // ── DefectDojo — ALWAYS upload regardless of pipeline outcome ──
-                // Security scan results are already generated in stages 6-9.
-                // Upload them even if k8s manifest update or any other stage failed.
-                // This ensures findings always reach the security dashboard.
-                publishToDefectDojo()
             }
         }
 

@@ -44,9 +44,10 @@ This library provides a standardized DevSecOps pipeline template where **only th
 | 7 | **Vuln Scan — Dockerfile** | Trivy base image + OPA Dockerfile policies + Gitleaks secrets detection |
 | 8 | **Docker Build & Push** | Builds image, pushes to Harbor, removes local copy |
 | 9 | **Vuln Scan — App Image** | Trivy full image (all layers) + OPA K8s manifest policies |
-| 10 | **K8s Manifest Update** | Updates image tag in manifest repo, commits & pushes |
+| 10 | **Publish Security Results** | Uploads all scan reports to DefectDojo; sends results email |
+| 11 | **K8s Manifest Update** | Updates image tag in manifest repo, commits & pushes |
 
-> **DefectDojo upload** runs in `post { always {} }` — not as a numbered stage — so scan results reach the security dashboard even if stage 10 or any other downstream stage fails.
+> **Stage 10 runs before Stage 11 by design** — scan results reach DefectDojo even if the K8s manifest update fails.
 
 ---
 
@@ -61,7 +62,7 @@ This library provides a standardized DevSecOps pipeline template where **only th
 | `owaspDependencyCheck` | Language-aware CVE scanning: OWASP Maven plugin, `npm audit`, `govulncheck` (Go), OWASP Gradle plugin, `dotnet list package`. `failOnCVSS` controls blocking vs reporting. |
 | `vulnScanDocker` | Parallel: Trivy base image CVE scan (HTML report + email) + OPA Conftest Dockerfile policies + Gitleaks hardcoded secrets detection. Runs **before** `buildDockerImageAndPush`. |
 | `vulnScanApplicationImage` | Parallel: Trivy full image scan (2 rounds: informational HIGH+CRITICAL, then blocking CRITICAL) + OPA K8s manifest scan. Auto-detects `k8s/` directory. |
-| `publishToDefectDojo` | Uploads all scan reports to DefectDojo. Called inside `post { always {} }` so results are uploaded **regardless of pipeline outcome** (success, failure, or abort). Supports Trivy image, Trivy base image, OWASP, npm audit, Gitleaks, and govulncheck. Skips missing files — safe for all project types. Sends an HTML results email with a direct link to the DefectDojo engagement. |
+| `publishToDefectDojo` | Uploads all scan reports to DefectDojo at **stage 10** — intentionally before the K8s manifest update (stage 11) so findings are always captured even if manifest push fails. Supports Trivy image, Trivy base image, OWASP, npm audit, Gitleaks, and govulncheck. Skips missing files — safe for all project types. Sends an HTML results email with a direct link to the DefectDojo engagement. |
 | `updateK8sManifest` | Clones manifest repo, pre-flight verifies files exist (pauses pipeline + emails team if missing), updates image tags, verifies update, commits & pushes. Never silently succeeds. |
 | `k8sManifestScanAndUpdate` | Same as above **plus** OPA Conftest scan of updated manifests before push. Recommended for production. |
 | `sonarSast` | SonarQube analysis with optional quality gate wait. `projectKey`/`projectName` default to `IMAGE_NAME`/`PROJECT_NAME`. |
@@ -116,7 +117,7 @@ environment {
 
     // DefectDojo — create one Engagement per service in DefectDojo and paste the ID
     DEFECTDOJO_URL           = 'https://defectdojo.devops.softnethq.co.tz'
-    DEFECTDOJO_ENGAGEMENT_ID = '3'   // unique number per service
+    DEFECTDOJO_ENGAGEMENT_ID = '1'   // unique number per service
 }
 ```
 
@@ -143,7 +144,7 @@ environment {
 | `lsaid` | Username/Password | GitLab source and manifest repos |
 | `robot-jenkins` | Username/Password | Harbor robot account |
 | `nvd-api-key` | Secret text | NVD API key for OWASP scans — [register free](https://nvd.nist.gov/developers/request-an-api-key) |
-| `defectdojo-api-token` | Secret text | DefectDojo API token (stage 11) |
+| `defectdojo-api-token` | Secret text | DefectDojo API token (stage 10 — `publishToDefectDojo`) |
 
 ### Global Tool Configuration *(Manage Jenkins → Global Tool Configuration)*
 
@@ -257,7 +258,7 @@ The pipeline is designed to keep Jenkins disk usage under control:
 | `BUILD_TOOL` | Build tool override | auto-detect |
 | `APP_TIMEZONE` | Timezone baked into Docker image | — |
 | `DEFECTDOJO_URL` | DefectDojo instance base URL | `http://192.168.15.85:8090` |
-| `DEFECTDOJO_ENGAGEMENT_ID` | DefectDojo engagement ID (unique per service) | **Required for stage 11** |
+| `DEFECTDOJO_ENGAGEMENT_ID` | DefectDojo engagement ID (unique per service) | **Required for stage 10** |
 
 ### Auto-populated (do not edit)
 
@@ -272,11 +273,11 @@ The pipeline is designed to keep Jenkins disk usage under control:
 
 ## DefectDojo Integration
 
-All scan reports are automatically uploaded to **DefectDojo** via `publishToDefectDojo()`, which is called inside `post { always {} }` — **not as a numbered pipeline stage**.
+All scan reports are automatically uploaded to **DefectDojo** by `publishToDefectDojo()` running as **stage 10**, directly before the K8s manifest update (stage 11).
 
-### Why `post { always {} }` instead of a stage?
+### Why stage 10 runs before the K8s manifest update
 
-Placing the upload in `post { always {} }` guarantees that security findings reach the dashboard **regardless of whether the pipeline succeeded or failed**. If stage 10 (K8s manifest update) fails, scan results from stages 6–9 are still uploaded — ensuring the security team always has visibility.
+Placing the upload at stage 10 guarantees that security findings reach the dashboard **even if stage 11 (K8s manifest update) fails**. Scan results from stages 6–9 are always captured, ensuring the security team has full visibility regardless of downstream deployment steps.
 
 ### What gets uploaded
 
@@ -304,7 +305,7 @@ Only files that exist are uploaded — safe to call on any project type.
 
 ### Behaviour
 
-- **Always runs**: Placed in `post { always {} }` — uploads even on pipeline failure or abort.
+- **Runs before K8s update**: Stage 10 executes before stage 11 — findings are captured even if manifest push fails.
 - **Deduplication**: DefectDojo merges findings — the same CVE found again updates the existing ticket rather than creating a duplicate.
 - **Auto-close**: `close_old_findings=true` automatically closes fixed CVEs on the next build.
 - **Non-blocking**: Upload failures emit a warning but do not fail the pipeline.
@@ -323,7 +324,8 @@ Only files that exist are uploaded — safe to call on any project type.
 | Dockerfile | Trivy base image + OPA Conftest | 7 |
 | Secrets in source | Gitleaks | 7 |
 | Application image (all layers) | Trivy | 9 |
-| K8s manifests (IaC) | OPA Conftest | 9 (and optionally 10) |
+| K8s manifests (IaC) | OPA Conftest | 9 (and optionally 11) |
+| Security findings aggregation | DefectDojo | 10 |
 
 ### OPA Dockerfile policies (`opa-docker-security.rego`)
 
