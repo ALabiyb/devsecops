@@ -45,6 +45,7 @@ This library provides a standardized DevSecOps pipeline template where **only th
 | 8 | **Docker Build & Push** | Builds image, pushes to Harbor, removes local copy |
 | 9 | **Vuln Scan — App Image** | Trivy full image (all layers) + OPA K8s manifest policies |
 | 10 | **K8s Manifest Update** | Updates image tag in manifest repo, commits & pushes |
+| 11 | **Publish Security Results** | Uploads all scan reports to DefectDojo; sends results email |
 
 ---
 
@@ -56,9 +57,10 @@ This library provides a standardized DevSecOps pipeline template where **only th
 |:---------|:------------|
 | `buildArtifact` | Multi-language build orchestration. Auto-detects tool from project files; supports `buildTool`, `command`, and per-tool overrides. No `archiveArtifacts` — Harbor is the artifact store. |
 | `buildDockerImageAndPush` | Builds Docker image with `--build-arg` metadata (git commit, author, version). Pushes to Harbor, then removes both local and registry-tagged images. Caps Docker build cache at 2 GB. |
-| `owaspDependencyCheck` | **New.** Language-aware CVE scanning: OWASP Maven plugin, `npm audit`, `govulncheck` (Go), OWASP Gradle plugin, `dotnet list package`. `failOnCVSS` controls blocking vs reporting. |
-| `vulnScanDocker` | Parallel: Trivy base image CVE scan + OPA Conftest Dockerfile policies + Gitleaks hardcoded secrets detection. Runs **before** `buildDockerImageAndPush`. |
+| `owaspDependencyCheck` | Language-aware CVE scanning: OWASP Maven plugin, `npm audit`, `govulncheck` (Go), OWASP Gradle plugin, `dotnet list package`. `failOnCVSS` controls blocking vs reporting. |
+| `vulnScanDocker` | Parallel: Trivy base image CVE scan (HTML report + email) + OPA Conftest Dockerfile policies + Gitleaks hardcoded secrets detection. Runs **before** `buildDockerImageAndPush`. |
 | `vulnScanApplicationImage` | Parallel: Trivy full image scan (2 rounds: informational HIGH+CRITICAL, then blocking CRITICAL) + OPA K8s manifest scan. Auto-detects `k8s/` directory. |
+| `publishToDefectDojo` | **New.** Uploads all scan reports to DefectDojo at the end of every build. Supports Trivy image, Trivy base image, OWASP, npm audit, Gitleaks, and govulncheck. Skips files that don't exist — safe for all project types. Sends an HTML results email with a direct link to the DefectDojo engagement. |
 | `updateK8sManifest` | Clones manifest repo, pre-flight verifies files exist (pauses pipeline + emails team if missing), updates image tags, verifies update, commits & pushes. Never silently succeeds. |
 | `k8sManifestScanAndUpdate` | Same as above **plus** OPA Conftest scan of updated manifests before push. Recommended for production. |
 | `sonarSast` | SonarQube analysis with optional quality gate wait. `projectKey`/`projectName` default to `IMAGE_NAME`/`PROJECT_NAME`. |
@@ -110,6 +112,10 @@ environment {
 
     BUILD_TOOL   = 'maven'   // or: npm | go | gradle | dotnet | remove to auto-detect
     APP_TIMEZONE = 'Africa/Dar_es_Salaam'
+
+    // DefectDojo — create one Engagement per service in DefectDojo and paste the ID
+    DEFECTDOJO_URL           = 'https://defectdojo.devops.softnethq.co.tz'
+    DEFECTDOJO_ENGAGEMENT_ID = '1'   // unique number per service
 }
 ```
 
@@ -136,6 +142,7 @@ environment {
 | `lsaid` | Username/Password | GitLab source and manifest repos |
 | `robot-jenkins` | Username/Password | Harbor robot account |
 | `nvd-api-key` | Secret text | NVD API key for OWASP scans — [register free](https://nvd.nist.gov/developers/request-an-api-key) |
+| `defectdojo-api-token` | Secret text | DefectDojo API token (stage 11) |
 
 ### Global Tool Configuration *(Manage Jenkins → Global Tool Configuration)*
 
@@ -248,6 +255,8 @@ The pipeline is designed to keep Jenkins disk usage under control:
 | `K8S_MANIFEST_PATHS` | Comma-separated manifest file paths | `deployment.yaml` |
 | `BUILD_TOOL` | Build tool override | auto-detect |
 | `APP_TIMEZONE` | Timezone baked into Docker image | — |
+| `DEFECTDOJO_URL` | DefectDojo instance base URL | `http://192.168.15.85:8090` |
+| `DEFECTDOJO_ENGAGEMENT_ID` | DefectDojo engagement ID (unique per service) | **Required for stage 11** |
 
 ### Auto-populated (do not edit)
 
@@ -257,6 +266,43 @@ The pipeline is designed to keep Jenkins disk usage under control:
 | `GIT_AUTHOR` | `git log -1 --pretty=format:"%an"` |
 | `APP_VERSION` | `1.0.${env.BUILD_NUMBER}` |
 | `BUILD_DATE_UTC` | ISO-8601 UTC timestamp |
+
+---
+
+## DefectDojo Integration
+
+All scan reports are automatically uploaded to **DefectDojo** at the end of every pipeline run (stage 11 — `publishToDefectDojo`).
+
+### What gets uploaded
+
+| Report file | Scanner | Produced by |
+|:------------|:--------|:------------|
+| `trivy-report.json` | Trivy Scan | `vulnScanApplicationImage` |
+| `trivy-base-report.json` | Trivy Scan | `vulnScanDocker` |
+| `target/dependency-check-report.xml` | Dependency Check Scan | `owaspDependencyCheck` (Maven) |
+| `npm-audit-report.json` | NPM Audit Scan | `owaspDependencyCheck` (npm) |
+| `gitleaks-report.json` | Gitleaks Scan | `vulnScanDocker` |
+| `govulncheck-report.txt` | Govulncheck Scanner | `owaspDependencyCheck` (Go) |
+
+Only files that exist are uploaded — safe to call on any project type.
+
+### One-time DefectDojo setup
+
+1. **Create a Product** in DefectDojo for each microservice.
+2. **Create an Engagement** inside the Product (e.g. "CI/CD").
+3. Copy the **Engagement ID** (visible in the URL: `/engagement/<id>`).
+4. Add `DEFECTDOJO_ENGAGEMENT_ID = '<id>'` to the Jenkinsfile `environment{}` block.
+5. Add the API token credential in Jenkins:
+   - **Manage Jenkins → Credentials → Add → Secret text**
+   - **ID**: `defectdojo-api-token`
+   - **Value**: DefectDojo → top-right menu → *API v2* → Authorize → copy token
+
+### Behaviour
+
+- **Deduplication**: DefectDojo merges findings — the same CVE found again updates the existing ticket rather than creating a duplicate.
+- **Auto-close**: `close_old_findings=true` automatically closes fixed CVEs on the next build.
+- **Non-blocking**: Upload failures emit a warning but do not fail the pipeline.
+- **Email notification**: After a successful upload, the team receives an HTML email with a direct link to the DefectDojo engagement.
 
 ---
 
@@ -311,6 +357,6 @@ The pipeline is designed to keep Jenkins disk usage under control:
 
 ---
 
-**Last Updated**: 2026-05-09
-**Library Version**: 3.0
+**Last Updated**: 2026-05-16
+**Library Version**: 3.1
 **Maintained by**: DevOps Engineering Team

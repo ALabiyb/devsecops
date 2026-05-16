@@ -113,6 +113,10 @@ pipeline {
         // App config
         APP_TIMEZONE = 'Africa/Dar_es_Salaam'
 
+        // ← ADD THESE TWO LINES (use the engagement ID from DefectDojo)
+        DEFECTDOJO_URL           = 'https://defectdojo.devops.softnethq.co.tz'
+        DEFECTDOJO_ENGAGEMENT_ID = '1'
+
         // Auto-populated — do not edit
         GIT_COMMIT     = sh(script: 'git rev-parse HEAD 2>/dev/null || echo unknown', returnStdout: true).trim()
         GIT_AUTHOR     = sh(script: 'git log -1 --pretty=format:"%an" 2>/dev/null || echo unknown', returnStdout: true).trim()
@@ -278,6 +282,15 @@ pipeline {
                 script {
                     k8sManifestScanAndUpdate()   // recommended: update + OPA scan
                     // updateK8sManifest()        // alternative: update only
+                }
+            }
+        }
+
+        // ── 11. PUBLISH SECURITY RESULTS ─────────────────────────────────────
+        stage('Publish Security Results') {
+            steps {
+                script {
+                    publishToDefectDojo()
                 }
             }
         }
