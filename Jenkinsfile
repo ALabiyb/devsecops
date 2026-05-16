@@ -115,7 +115,7 @@ pipeline {
 
         // ← ADD THESE TWO LINES (use the engagement ID from DefectDojo)
         DEFECTDOJO_URL           = 'https://defectdojo.devops.softnethq.co.tz'
-        DEFECTDOJO_ENGAGEMENT_ID = '1'
+        DEFECTDOJO_ENGAGEMENT_ID = '3'
 
         // Auto-populated — do not edit
         GIT_COMMIT     = sh(script: 'git rev-parse HEAD 2>/dev/null || echo unknown', returnStdout: true).trim()
@@ -285,15 +285,6 @@ pipeline {
                 }
             }
         }
-
-        // ── 11. PUBLISH SECURITY RESULTS ─────────────────────────────────────
-        stage('Publish Security Results') {
-            steps {
-                script {
-                    publishToDefectDojo()
-                }
-            }
-        }
     }
 
     post {
@@ -312,6 +303,12 @@ pipeline {
                 } else {
                     echo "ℹ️  No dependency-check-report.xml — skipping (non-Maven project uses npm audit / govulncheck)"
                 }
+
+                // ── DefectDojo — ALWAYS upload regardless of pipeline outcome ──
+                // Security scan results are already generated in stages 6-9.
+                // Upload them even if k8s manifest update or any other stage failed.
+                // This ensures findings always reach the security dashboard.
+                publishToDefectDojo()
             }
         }
 

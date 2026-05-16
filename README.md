@@ -45,7 +45,8 @@ This library provides a standardized DevSecOps pipeline template where **only th
 | 8 | **Docker Build & Push** | Builds image, pushes to Harbor, removes local copy |
 | 9 | **Vuln Scan — App Image** | Trivy full image (all layers) + OPA K8s manifest policies |
 | 10 | **K8s Manifest Update** | Updates image tag in manifest repo, commits & pushes |
-| 11 | **Publish Security Results** | Uploads all scan reports to DefectDojo; sends results email |
+
+> **DefectDojo upload** runs in `post { always {} }` — not as a numbered stage — so scan results reach the security dashboard even if stage 10 or any other downstream stage fails.
 
 ---
 
@@ -60,7 +61,7 @@ This library provides a standardized DevSecOps pipeline template where **only th
 | `owaspDependencyCheck` | Language-aware CVE scanning: OWASP Maven plugin, `npm audit`, `govulncheck` (Go), OWASP Gradle plugin, `dotnet list package`. `failOnCVSS` controls blocking vs reporting. |
 | `vulnScanDocker` | Parallel: Trivy base image CVE scan (HTML report + email) + OPA Conftest Dockerfile policies + Gitleaks hardcoded secrets detection. Runs **before** `buildDockerImageAndPush`. |
 | `vulnScanApplicationImage` | Parallel: Trivy full image scan (2 rounds: informational HIGH+CRITICAL, then blocking CRITICAL) + OPA K8s manifest scan. Auto-detects `k8s/` directory. |
-| `publishToDefectDojo` | **New.** Uploads all scan reports to DefectDojo at the end of every build. Supports Trivy image, Trivy base image, OWASP, npm audit, Gitleaks, and govulncheck. Skips files that don't exist — safe for all project types. Sends an HTML results email with a direct link to the DefectDojo engagement. |
+| `publishToDefectDojo` | Uploads all scan reports to DefectDojo. Called inside `post { always {} }` so results are uploaded **regardless of pipeline outcome** (success, failure, or abort). Supports Trivy image, Trivy base image, OWASP, npm audit, Gitleaks, and govulncheck. Skips missing files — safe for all project types. Sends an HTML results email with a direct link to the DefectDojo engagement. |
 | `updateK8sManifest` | Clones manifest repo, pre-flight verifies files exist (pauses pipeline + emails team if missing), updates image tags, verifies update, commits & pushes. Never silently succeeds. |
 | `k8sManifestScanAndUpdate` | Same as above **plus** OPA Conftest scan of updated manifests before push. Recommended for production. |
 | `sonarSast` | SonarQube analysis with optional quality gate wait. `projectKey`/`projectName` default to `IMAGE_NAME`/`PROJECT_NAME`. |
@@ -115,7 +116,7 @@ environment {
 
     // DefectDojo — create one Engagement per service in DefectDojo and paste the ID
     DEFECTDOJO_URL           = 'https://defectdojo.devops.softnethq.co.tz'
-    DEFECTDOJO_ENGAGEMENT_ID = '1'   // unique number per service
+    DEFECTDOJO_ENGAGEMENT_ID = '3'   // unique number per service
 }
 ```
 
@@ -271,7 +272,11 @@ The pipeline is designed to keep Jenkins disk usage under control:
 
 ## DefectDojo Integration
 
-All scan reports are automatically uploaded to **DefectDojo** at the end of every pipeline run (stage 11 — `publishToDefectDojo`).
+All scan reports are automatically uploaded to **DefectDojo** via `publishToDefectDojo()`, which is called inside `post { always {} }` — **not as a numbered pipeline stage**.
+
+### Why `post { always {} }` instead of a stage?
+
+Placing the upload in `post { always {} }` guarantees that security findings reach the dashboard **regardless of whether the pipeline succeeded or failed**. If stage 10 (K8s manifest update) fails, scan results from stages 6–9 are still uploaded — ensuring the security team always has visibility.
 
 ### What gets uploaded
 
@@ -299,6 +304,7 @@ Only files that exist are uploaded — safe to call on any project type.
 
 ### Behaviour
 
+- **Always runs**: Placed in `post { always {} }` — uploads even on pipeline failure or abort.
 - **Deduplication**: DefectDojo merges findings — the same CVE found again updates the existing ticket rather than creating a duplicate.
 - **Auto-close**: `close_old_findings=true` automatically closes fixed CVEs on the next build.
 - **Non-blocking**: Upload failures emit a warning but do not fail the pipeline.
@@ -358,5 +364,5 @@ Only files that exist are uploaded — safe to call on any project type.
 ---
 
 **Last Updated**: 2026-05-16
-**Library Version**: 3.1
+**Library Version**: 3.2
 **Maintained by**: DevOps Engineering Team
