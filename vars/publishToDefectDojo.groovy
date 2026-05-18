@@ -1,67 +1,99 @@
 /**
  * publishToDefectDojo.groovy
  *
- * Uploads security scan results from all scanners to DefectDojo.
- * Called as the last stage in every pipeline before post{}.
+ * Uploads security scan results from ALL scanners to DefectDojo.
  *
- * WHAT IT UPLOADS:
- *   trivy-report.json              → Trivy image scan (from vulnScanApplicationImage)
- *   trivy-base-report.json         → Trivy base image scan (from vulnScanDocker)
- *   target/dependency-check-report.xml → OWASP (from owaspDependencyCheck, Maven)
- *   npm-audit-report.json          → npm audit (from owaspDependencyCheck, npm)
- *   gitleaks-report.json           → Gitleaks (from vulnScanDocker)
+ * CALLED IN post { always {} } — runs regardless of which stage failed.
+ * This ensures security results always reach DefectDojo even if k8s update
+ * or any other stage fails.
  *
- * It only uploads files that exist — safe to call on any project type.
- * DefectDojo deduplicates findings — same CVE found again = same ticket (not duplicate).
- * Fixed CVEs are automatically closed on the next build (close_old_findings=true).
+ * WHAT IT UPLOADS (only files that exist — safe on any project type):
+ *   trivy-report.json                    → Trivy image scan       (vulnScanApplicationImage)
+ *   trivy-base-report.json               → Trivy base image scan  (vulnScanDocker)
+ *   target/dependency-check-report.xml   → OWASP Maven/Gradle     (owaspDependencyCheck)
+ *   npm-audit-report.json                → npm audit              (owaspDependencyCheck)
+ *   gitleaks-report.json                 → Gitleaks secrets       (vulnScanDocker)
+ *   govulncheck-report.json              → Go vulncheck           (owaspDependencyCheck)
+ *   dotnet-vuln-report.json              → .NET vulnerabilities   (owaspDependencyCheck)
+ *
+ * DefectDojo deduplicates findings:
+ *   Same CVE found again = updates existing ticket, not a duplicate
+ *   Fixed CVEs automatically closed on next build (close_old_findings=true)
  *
  * JENKINS SETUP (one time):
  *   Manage Jenkins → Credentials → Add → Secret text
- *   ID: defectdojo-api-token
- *   Value: get from DefectDojo → top right menu → API v2 → Authorize → copy token
+ *   ID:    defectdojo-api-token
+ *   Value: DefectDojo → click username top right → API v2 → copy token
  *
- * DEFECTDOJO SETUP (one time per service — see README):
- *   Create a Product per service, then an Engagement inside it.
- *   Copy the Engagement ID and add to Jenkinsfile environment{}.
+ * DEFECTDOJO SETUP (one time per service):
+ *   Create a Product for each service, then an Engagement inside it.
+ *   Copy the Engagement ID from the URL bar.
  *
- * USAGE — add to Jenkinsfile environment{} block:
- *   DEFECTDOJO_URL           = 'http://192.168.15.85:8090'
- *   DEFECTDOJO_ENGAGEMENT_ID = '1'   // unique number per service
+ * USAGE IN JENKINSFILE — add to environment{} block:
+ *   DEFECTDOJO_URL           = 'https://defectdojo.devops.softnethq.co.tz'
+ *   DEFECTDOJO_ENGAGEMENT_ID = '3'   // unique per service — get from DefectDojo URL
  *
- * USAGE — add as last stage before post{}:
- *   stage('Publish Security Results') {
- *       steps { script { publishToDefectDojo() } }
+ * USAGE — in post { always {} } (recommended):
+ *   post {
+ *       always {
+ *           script {
+ *               dependencyCheckPublisher(...)  // Maven report in Jenkins UI
+ *               publishToDefectDojo()          // all scanner results to DefectDojo
+ *           }
+ *       }
  *   }
  */
 def call(Map params = [:]) {
 
-    def defectDojoUrl     = params.defectDojoUrl     ?: env.DEFECTDOJO_URL           ?: 'http://192.168.15.85:8090'
+    def defectDojoUrl     = params.defectDojoUrl     ?: env.DEFECTDOJO_URL           ?: ''
     def engagementId      = params.engagementId      ?: env.DEFECTDOJO_ENGAGEMENT_ID ?: ''
     def credentialsId     = params.credentialsId     ?: 'defectdojo-api-token'
     def branchName        = params.branchName        ?: env.BRANCH_NAME              ?: 'main'
     def buildNumber       = params.buildNumber       ?: env.BUILD_NUMBER             ?: '0'
     def notificationEmail = params.notificationEmail ?: env.NOTIFICATION_EMAIL       ?: ''
 
-    if (!engagementId) {
-        echo "⚠️  DEFECTDOJO_ENGAGEMENT_ID not set in Jenkinsfile environment{} — skipping"
-        echo "ℹ️  See publishToDefectDojo.groovy header for setup instructions"
+    // Guard: skip silently if not configured — does not fail the build
+    if (!defectDojoUrl || !engagementId) {
+        echo "ℹ️  DefectDojo not configured — skipping upload"
+        echo "ℹ️  Add DEFECTDOJO_URL and DEFECTDOJO_ENGAGEMENT_ID to Jenkinsfile environment{}"
         return [success: false, skipped: true]
     }
 
     echo "=== Publishing Security Results to DefectDojo ==="
-    echo "DefectDojo:    ${defectDojoUrl}"
-    echo "Engagement:    ${engagementId}"
-    echo "Build:         ${buildNumber}"
+    echo "DefectDojo:  ${defectDojoUrl}"
+    echo "Engagement:  ${engagementId}"
+    echo "Build:       #${buildNumber}"
 
-    // Map of report files to DefectDojo scan types
-    // Only files that exist will be uploaded
+    // -------------------------------------------------------------------------
+    // Scan report files mapped to DefectDojo scan types
+    // Add new scanners here as they are added to the pipeline
+    //
+    // DefectDojo scan types reference:
+    //   https://defectdojo.github.io/django-DefectDojo/integrations/parsers/
+    // -------------------------------------------------------------------------
     def scansToUpload = [
-        [file: 'trivy-report.json',                        type: 'Trivy Scan',             label: 'Trivy Image Scan'],
-        [file: 'trivy-base-report.json',                   type: 'Trivy Scan',             label: 'Trivy Base Image Scan'],
-        [file: 'target/dependency-check-report.xml',       type: 'Dependency Check Scan',  label: 'OWASP Dependency Check'],
-        [file: 'npm-audit-report.json',                    type: 'NPM Audit Scan',         label: 'npm Audit'],
-        [file: 'gitleaks-report.json',                     type: 'Gitleaks Scan',          label: 'Gitleaks Secrets'],
-        [file: 'govulncheck-report.txt',                   type: 'Govulncheck Scanner',    label: 'Go vulncheck'],
+        // Trivy — container image CVE scans
+        [file: 'trivy-report.json',                        type: 'Trivy Scan',            label: 'Trivy Image Scan'],
+        [file: 'trivy-base-report.json',                   type: 'Trivy Scan',            label: 'Trivy Base Image Scan'],
+
+        // OWASP / Maven / Gradle — Java dependency CVE scan
+        [file: 'target/dependency-check-report.xml',       type: 'Dependency Check Scan', label: 'OWASP Dependency Check (Maven)'],
+        [file: 'build/reports/dependency-check-report.xml',type: 'Dependency Check Scan', label: 'OWASP Dependency Check (Gradle)'],
+
+        // npm audit — Node.js/React/Next.js dependency CVE scan
+        [file: 'npm-audit-report.json',                    type: 'NPM Audit Scan',        label: 'npm Audit'],
+
+        // Gitleaks — hardcoded secrets detection
+        [file: 'gitleaks-report.json',                     type: 'Gitleaks Scan',         label: 'Gitleaks Secrets'],
+
+        // govulncheck — Go module CVE scan (JSON from owaspDependencyCheck scanGo)
+        [file: 'govulncheck-report.json',                  type: 'Govulncheck Scanner',   label: 'Go vulncheck'],
+
+        // dotnet — .NET NuGet CVE scan (JSON from owaspDependencyCheck scanDotnet)
+        [file: 'dotnet-vuln-report.json',                  type: 'Anchore Grype',         label: '.NET Vulnerabilities'],
+
+        // OSV-Scanner — Google OSV.dev database scan (all languages, especially Python)
+        [file: 'osv-report.json',                          type: 'OSV Scan',              label: 'OSV-Scanner'],
     ]
 
     def uploadedScans = []
@@ -71,50 +103,54 @@ def call(Map params = [:]) {
     withCredentials([string(credentialsId: credentialsId, variable: 'DD_API_TOKEN')]) {
 
         scansToUpload.each { scan ->
+            // Skip files that don't exist — normal for language-specific reports
             if (!fileExists(scan.file)) {
                 skippedScans << scan.label
-                return // not found — this project type doesn't produce this report
+                return
             }
 
             echo "📤 Uploading ${scan.label}..."
 
             def exitCode = sh(
                 script: """
-                    curl -sf -X POST \
-                        "${defectDojoUrl}/api/v2/import-scan/" \
-                        -H "Authorization: Token \$DD_API_TOKEN" \
-                        -F "scan_type=${scan.type}" \
-                        -F "file=@${scan.file}" \
-                        -F "engagement=${engagementId}" \
-                        -F "verified=false" \
-                        -F "active=true" \
-                        -F "close_old_findings=true" \
-                        -F "push_to_jira=false" \
-                        -F "version=${buildNumber}" \
-                        -F "branch_tag=${branchName}" \
-                        -o /dev/null \
+                    curl -sf -X POST \\
+                        "${defectDojoUrl}/api/v2/import-scan/" \\
+                        -H "Authorization: Token \$DD_API_TOKEN" \\
+                        -F "scan_type=${scan.type}" \\
+                        -F "file=@${scan.file}" \\
+                        -F "engagement=${engagementId}" \\
+                        -F "verified=false" \\
+                        -F "active=true" \\
+                        -F "close_old_findings=true" \\
+                        -F "push_to_jira=false" \\
+                        -F "version=${buildNumber}" \\
+                        -F "branch_tag=${branchName}" \\
+                        -o /dev/null \\
                         -w "%{http_code}" | grep -q "201"
                 """,
                 returnStatus: true
             )
 
             if (exitCode == 0) {
-                echo "✅ ${scan.label} uploaded successfully"
+                echo "✅ ${scan.label} uploaded"
                 uploadedScans << scan.label
             } else {
-                echo "⚠️  ${scan.label} upload failed — check DefectDojo connectivity"
+                echo "⚠️  ${scan.label} upload failed"
                 failedUploads << scan.label
             }
         }
     }
 
-    echo "✅ Uploaded:  ${uploadedScans  ?: 'none'}"
-    echo "ℹ️  Skipped:  ${skippedScans   ?: 'none'} (report files not found — normal for this project type)"
+    echo ""
+    echo "=== DefectDojo Upload Summary ==="
+    echo "✅ Uploaded: ${uploadedScans ?: 'none'}"
+    echo "ℹ️  Skipped: ${skippedScans  ?: 'none'} (not produced by this project type — normal)"
     if (failedUploads) {
-        echo "⚠️  Failed:   ${failedUploads} — verify DefectDojo is running and API token is correct"
+        echo "⚠️  Failed:  ${failedUploads} — check DefectDojo URL and API token"
     }
 
-    // Send email with DefectDojo link
+    // Send email only when at least one scan was uploaded
+    // No email on clean run with no uploads (e.g. build failed before any scan ran)
     if (uploadedScans && notificationEmail) {
         sendDefectDojoEmail(
             defectDojoUrl:     defectDojoUrl,
@@ -125,12 +161,17 @@ def call(Map params = [:]) {
         )
     }
 
-    return [success: true, uploaded: uploadedScans, failed: failedUploads, skipped: skippedScans]
+    return [
+        success:  true,
+        uploaded: uploadedScans,
+        failed:   failedUploads,
+        skipped:  skippedScans
+    ]
 }
 
 // -----------------------------------------------------------------------------
-// Email with link to DefectDojo results
-// Only sent when at least one scan was uploaded successfully
+// Sends notification email with DefectDojo results link
+// Only called when at least one scan was uploaded successfully
 // -----------------------------------------------------------------------------
 def sendDefectDojoEmail(Map params) {
     def defectDojoUrl     = params.defectDojoUrl
@@ -141,13 +182,17 @@ def sendDefectDojoEmail(Map params) {
 
     try {
         def scanRows = uploadedScans.collect { scan ->
-            "<tr><td style='padding:8px 12px;border-bottom:1px solid #eee'>✅ ${scan}</td>" +
-            "<td style='padding:8px 12px;border-bottom:1px solid #eee;color:#2e7d32;font-weight:bold'>Uploaded</td></tr>"
+            "<tr>" +
+            "<td style='padding:8px 12px;border-bottom:1px solid #eee'>✅ ${scan}</td>" +
+            "<td style='padding:8px 12px;border-bottom:1px solid #eee;color:#2e7d32;font-weight:bold'>Uploaded</td>" +
+            "</tr>"
         }.join('')
 
         def failRows = failedUploads.collect { scan ->
-            "<tr><td style='padding:8px 12px;border-bottom:1px solid #eee'>⚠️ ${scan}</td>" +
-            "<td style='padding:8px 12px;border-bottom:1px solid #eee;color:#dc3545'>Failed</td></tr>"
+            "<tr>" +
+            "<td style='padding:8px 12px;border-bottom:1px solid #eee'>⚠️ ${scan}</td>" +
+            "<td style='padding:8px 12px;border-bottom:1px solid #eee;color:#dc3545'>Failed</td>" +
+            "</tr>"
         }.join('')
 
         emailext(
@@ -189,11 +234,11 @@ def sendDefectDojoEmail(Map params) {
 
     <div class="tip">
       <strong>What to do when you see findings:</strong><br>
-      &bull; <strong>New CVE:</strong> check the fix version in the finding — update your dependency or base image<br>
-      &bull; <strong>False positive:</strong> click the finding → mark as False Positive → it won't appear again<br>
-      &bull; <strong>Accepted risk:</strong> click → Risk Accepted → add a justification and expiry date<br>
-      &bull; <strong>Fixed:</strong> findings automatically close on the next build when the vulnerability is gone<br>
-      &bull; <strong>Metrics tab:</strong> shows your service security trend over time
+      &bull; <strong>New CVE:</strong> check the fix version — update your dependency or base image<br>
+      &bull; <strong>False positive:</strong> click finding → mark as False Positive → suppressed forever<br>
+      &bull; <strong>Accepted risk:</strong> click → Risk Accepted → add justification and expiry date<br>
+      &bull; <strong>Fixed:</strong> findings auto-close on the next build when vulnerability is gone<br>
+      &bull; <strong>Metrics tab:</strong> shows your service security score trend over time
     </div>
 
     <p style="font-size:13px;color:#555;text-align:center">
@@ -210,6 +255,7 @@ def sendDefectDojoEmail(Map params) {
         )
         echo "✅ DefectDojo notification sent to: ${notificationEmail}"
     } catch (Exception e) {
+        // Never fail the pipeline because of email — results are already uploaded
         echo "⚠️  DefectDojo email failed (results still uploaded): ${e.getMessage()}"
     }
 }

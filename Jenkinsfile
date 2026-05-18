@@ -193,20 +193,30 @@ pipeline {
         }
 
         // ── 6. DEPENDENCY CHECK ───────────────────────────────────────────────
-        // Scans ALL dependencies for known CVEs — auto-detects language:
-        //   Maven  → OWASP Maven plugin → XML report → dependencyCheckPublisher
-        //   npm    → npm audit          → npm-audit-report.json
-        //   Go     → govulncheck        → govulncheck-report.txt
-        //   Gradle → OWASP Gradle       → XML report
-        //   .NET   → dotnet list        → dotnet-vuln-report.txt
+        // OWASP and OSV-Scanner run in PARALLEL — independent, no shared state
         //
-        // Start with failOnCVSS: 0 (report only) to see what vulnerabilities
-        // exist before enforcing. Change to 9 when team is ready.
+        // owaspDependencyCheck: language-specific tools
+        //   Maven  → OWASP Maven plugin
+        //   npm    → npm audit
+        //   Go     → govulncheck
+        //   Gradle → OWASP Gradle plugin
+        //   .NET   → dotnet list
+        //   Python → skips (OSV covers it)
+        //
+        // osvScanner: Google OSV.dev database — all languages including Python
+        //   Auto-detects manifest files (requirements.txt, pom.xml, package-lock.json, etc.)
+        //
+        // Both reports uploaded to DefectDojo by publishToDefectDojo() in post{}
         stage('Dependency Check') {
             steps {
                 script {
-                    owaspDependencyCheck(
-                        failOnCVSS: 0   // 0=report | 7=fail HIGH+ | 9=fail CRITICAL
+                    parallel(
+                        "OWASP Dependency Check": {
+                            owaspDependencyCheck(failOnCVSS: 0)
+                        },
+                        "OSV Scanner": {
+                            osvScanner(failOnCritical: false)
+                        }
                     )
                 }
             }
