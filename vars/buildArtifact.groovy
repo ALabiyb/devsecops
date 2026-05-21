@@ -57,6 +57,9 @@ def call(Map params = [:]) {
             case 'dotnet':
                 buildDotnet(params)
                 break
+            case 'python':
+                buildPython(params)
+                break
             default:
                 error "Unsupported build tool: ${buildTool}. Supported: maven, npm, node, next, go, gradle, dotnet"
         }
@@ -177,6 +180,29 @@ def buildDotnet(Map params) {
     // ✅ Published output in out/ picked up by Dockerfile
 }
 
+
+// Python — no compilation needed
+// pip install runs during Docker build using requirements.txt
+// OSV-Scanner and OWASP will scan requirements.txt directly
+def buildPython(Map params) {
+    echo "Stage: Build Artifact - Python"
+
+    if (!fileExists('requirements.txt')) {
+        echo "⚠️  No requirements.txt found — skipping pip install"
+        return
+    }
+
+    sh """
+        python3 --version || python --version
+        echo "✅ Python project detected"
+        echo "ℹ️  requirements.txt found — dependencies will be installed during Docker build"
+        echo "ℹ️  No compilation needed for Python projects"
+        pip3 install -r requirements.txt --dry-run 2>/dev/null || \
+        pip install -r requirements.txt --dry-run 2>/dev/null || \
+        echo "ℹ️  pip dry-run skipped — dependencies will install in Docker"
+    """
+}
+
 // -----------------------------------------------------------------------------
 // Auto-detect build tool from common project files
 // Order matters: check most specific first
@@ -187,5 +213,7 @@ def detectBuildTool() {
     if (fileExists('go.mod'))                                          return 'go'
     if (fileExists('build.gradle') || fileExists('build.gradle.kts')) return 'gradle'
     if (fileExists('*.csproj')     || fileExists('*.sln'))             return 'dotnet'
+    if (fileExists('requirements.txt')) || fileExists('Pipfile'))       return 'python'
+    if (fileExists('requirements*.txt'))                              return 'python'
     return 'maven' // safe default
 }
