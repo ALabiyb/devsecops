@@ -213,7 +213,7 @@ def detectBuildTool() {
     if (fileExists('go.mod'))                                          return 'go'
     if (fileExists('build.gradle') || fileExists('build.gradle.kts')) return 'gradle'
     if (fileExists('*.csproj')     || fileExists('*.sln'))             return 'dotnet'
-    if (fileExists('requirements.txt')) || fileExists('Pipfile'))       return 'python'
+    if (fileExists('requirements.txt') || fileExists('Pipfile'))       return 'python'
     if (fileExists('requirements*.txt'))                              return 'python'
     return 'maven' // safe default
 }
