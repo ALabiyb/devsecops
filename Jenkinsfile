@@ -120,6 +120,11 @@ pipeline {
         // Dependency-Track — credential 'dependency-track-api-key' in Jenkins
         DEPENDENCY_TRACK_URL     = 'https://dependencytrack.devops.softnethq.co.tz'
 
+        // DAST — staging URL of this service on the K8s cluster
+        // ZAP scans this URL after K8s deploy (stage 14)
+        // Leave empty or remove to skip DAST for this service
+        STAGING_URL = 'https://my-service.staging.k8s.softnethq.co.tz'
+
         // Auto-populated — do not edit
         GIT_COMMIT     = sh(script: 'git rev-parse HEAD 2>/dev/null || echo unknown', returnStdout: true).trim()
         GIT_AUTHOR     = sh(script: 'git log -1 --pretty=format:"%an" 2>/dev/null || echo unknown', returnStdout: true).trim()
@@ -340,6 +345,28 @@ pipeline {
                 script {
                     k8sManifestScanAndUpdate()   // recommended: update + OPA scan
                     // updateK8sManifest()        // alternative: update only
+                }
+            }
+        }
+
+        // ── 14. DAST SCAN ─────────────────────────────────────────────────────
+        // OWASP ZAP scans the RUNNING application on K8s staging after deploy.
+        // Waits 90s for deployment to stabilise before scanning.
+        // Skipped silently if STAGING_URL is not set.
+        // Non-blocking: alert findings mark UNSTABLE, do not stop delivery.
+        //
+        // Scan types (set scanType param):
+        //   baseline → passive scan only, ~2–5 min (default, safe)
+        //   full     → passive + active attack, ~15–60 min (thorough)
+        //   api      → REST API scan via OpenAPI spec (best for microservices)
+        stage('DAST Scan') {
+            steps {
+                script {
+                    dastScan(
+                        stagingUrl:  env.STAGING_URL,
+                        scanType:    'baseline',
+                        waitSeconds: 90
+                    )
                 }
             }
         }

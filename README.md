@@ -51,6 +51,7 @@ This library provides a standardized DevSecOps pipeline template where **only th
 | 11 | **Vuln Scan — App Image** | Trivy full image (all layers) + OPA K8s manifest policies; removes local image |
 | 12 | **Publish Security Results** | Uploads all scan reports to DefectDojo; sends results email |
 | 13 | **K8s Manifest Update** | Updates image tag in manifest repo (+ optional OPA scan), commits & pushes |
+| 14 | **DAST Scan** | OWASP ZAP scans the live staging URL after deploy — passive baseline scan, findings go to DefectDojo |
 
 > **Stage 12 runs before Stage 13 by design** — scan results reach DefectDojo even if the K8s manifest update fails.
 >
@@ -68,6 +69,7 @@ This library provides a standardized DevSecOps pipeline template where **only th
 |:---------|:------------|
 | `buildArtifact` | Multi-language build orchestration. Auto-detects tool from project files; supports `buildTool`, `command`, and per-tool overrides. No `archiveArtifacts` — Harbor is the artifact store. |
 | `buildDockerImageAndPush` | Builds Docker image with `--build-arg` metadata (git commit, author, version). Pushes to Harbor, keeps local image for SBOM and vulnerability scanning, then removes it after Stage 10. Caps Docker build cache at 2 GB. |
+| `dastScan` | OWASP ZAP baseline/full/API scan against the live staging URL. Runs after K8s deploy. Skipped if `STAGING_URL` not set. JSON report → DefectDojo, HTML report → Jenkins build artifacts. Non-blocking — findings mark UNSTABLE. Requires `STAGING_URL` env var and `defectdojo-api-token` credential. |
 | `signImage` | Signs the pushed Harbor image using cosign (key-based). Signature stored as OCI artifact in Harbor alongside the image. Annotations: `git-commit`, `builder=jenkins`, `build-number`. Non-blocking: failure marks UNSTABLE. Requires cosign installed on Jenkins host and credentials `cosign-private-key` + `cosign-password`. |
 | `generateSbom` | Runs Syft against the local Docker image to produce a CycloneDX JSON SBOM. Uploads to Dependency-Track API (`autoCreate=true` — project is created on first run). Non-blocking: failure marks build UNSTABLE but does not halt delivery. Must run after `buildDockerImageAndPush` and before `vulnScanApplicationImage`. |
 | `owaspDependencyCheck` | Language-aware CVE scanning: OWASP Maven plugin, `npm audit`, `govulncheck` (Go), OWASP Gradle plugin, `dotnet list package`. `failOnCVSS` controls blocking vs reporting. |
@@ -412,6 +414,7 @@ Both tools work together — DefectDojo handles what was found in this build; De
 | `DEFECTDOJO_URL` | DefectDojo instance base URL | Yes |
 | `DEFECTDOJO_ENGAGEMENT_ID` | DefectDojo engagement ID (unique per service) | Yes |
 | `DEPENDENCY_TRACK_URL` | Dependency-Track base URL | Yes |
+| `STAGING_URL` | Live staging URL of this service on K8s (e.g. `https://my-service.staging.k8s.softnethq.co.tz`) | No — skip DAST if omitted |
 
 ### Auto-populated (do not edit)
 
@@ -440,6 +443,7 @@ Both tools work together — DefectDojo handles what was found in this build; De
 | Application image (all layers) | Trivy | 11 | DefectDojo |
 | K8s manifests (IaC) | OPA Conftest | 11 + 13 | Pipeline log |
 | Security findings aggregation | DefectDojo | 12 | DefectDojo dashboard |
+| Dynamic scanning (DAST) | OWASP ZAP | 14 | DefectDojo + Jenkins artifact |
 | Continuous CVE monitoring | Dependency-Track | Always (between builds) | Email / DT dashboard |
 
 ### OPA Dockerfile policies (`opa-docker-security.rego`)
@@ -465,6 +469,66 @@ Both tools work together — DefectDojo handles what was found in this build; De
 - No dangerous `hostPath` mounts (`/proc`, `/sys`, `/`)
 - No `:latest` image tags
 - Services must be `NodePort`
+
+---
+
+## DAST — Dynamic Application Security Testing
+
+### What it does
+
+Stage 14 runs OWASP ZAP against the **live running application** on your K8s staging cluster after the image is deployed. This is fundamentally different from all earlier security stages:
+
+| Stage | Scans | What it finds |
+|:------|:------|:--------------|
+| 5 — SonarQube | Source code | Code-level bugs, insecure patterns |
+| 6 — OWASP | Dependency files | Known CVEs in libraries |
+| 7/11 — Trivy | Docker image layers | OS + package vulnerabilities |
+| **14 — ZAP** | **Running HTTP application** | **XSS, injection, misconfigs, missing headers, exposed endpoints** |
+
+ZAP finds issues that only appear at runtime — things static analysis can never see.
+
+### Scan types
+
+| Type | Command | Duration | Use when |
+|:-----|:--------|:---------|:---------|
+| `baseline` | `zap-baseline.py` | ~2–5 min | Default — safe for all apps |
+| `full` | `zap-full-scan.py` | ~15–60 min | Thorough — active attacks against staging |
+| `api` | `zap-api-scan.py` | ~5–10 min | REST microservices with OpenAPI/Swagger spec |
+
+For your microservices architecture, `api` scan with OpenAPI spec is the most accurate. Switch when OpenAPI specs are available:
+
+```groovy
+dastScan(
+    stagingUrl:  env.STAGING_URL,
+    scanType:    'api',
+    apiSpecUrl:  'https://my-service.staging.k8s.softnethq.co.tz/v3/api-docs',
+    waitSeconds: 90
+)
+```
+
+### Per-service setup
+
+Each service needs its staging URL in the Jenkinsfile `environment{}` block:
+
+```groovy
+STAGING_URL = 'https://payment-service.staging.k8s.softnethq.co.tz'
+```
+
+Services without a staging URL skip DAST automatically — no error, no change needed.
+
+### Requirements
+
+- Jenkins host (`192.168.200.78`) must have network access to the K8s cluster ingress
+- ZAP runs as an ephemeral Docker container — no installation needed
+- First run pulls `ghcr.io/zaproxy/zaproxy:stable` (~700 MB) — cached after
+- `defectdojo-api-token` credential already used by `publishToDefectDojo`
+
+### Reports
+
+| Report | Location |
+|:-------|:---------|
+| HTML | Jenkins build → Artifacts → `zap-report.html` |
+| JSON | Uploaded to DefectDojo automatically (scan type: `ZAP Scan`) |
 
 ---
 
