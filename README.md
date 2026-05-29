@@ -45,15 +45,18 @@ This library provides a standardized DevSecOps pipeline template where **only th
 | 5 | **SonarQube SAST** | Static analysis — code smells, vulnerabilities, coverage |
 | 6 | **Dependency Check** | CVE scan of all dependencies (language-specific tool) + OSV Scanner |
 | 7 | **Vuln Scan — Dockerfile** | Trivy base image CVE scan + OPA Dockerfile policies + Gitleaks secrets detection |
-| 8 | **Docker Build & Push** | Builds image, pushes to Harbor, keeps local copy for stages 9–10 |
-| 9 | **Generate & Upload SBOM** | Syft generates CycloneDX SBOM from local image → uploaded to Dependency-Track |
-| 10 | **Vuln Scan — App Image** | Trivy full image (all layers) + OPA K8s manifest policies; removes local image |
-| 11 | **Publish Security Results** | Uploads all scan reports to DefectDojo; sends results email |
-| 12 | **K8s Manifest Update** | Updates image tag in manifest repo (+ optional OPA scan), commits & pushes |
+| 8 | **Docker Build & Push** | Builds image, pushes to Harbor, keeps local copy for stages 10–11 |
+| 9 | **Sign Image** | cosign signs the Harbor image with the CI key — signature stored as OCI artifact in Harbor |
+| 10 | **Generate & Upload SBOM** | Syft generates CycloneDX SBOM from local image → uploaded to Dependency-Track |
+| 11 | **Vuln Scan — App Image** | Trivy full image (all layers) + OPA K8s manifest policies; removes local image |
+| 12 | **Publish Security Results** | Uploads all scan reports to DefectDojo; sends results email |
+| 13 | **K8s Manifest Update** | Updates image tag in manifest repo (+ optional OPA scan), commits & pushes |
 
-> **Stage 11 runs before Stage 12 by design** — scan results reach DefectDojo even if the K8s manifest update fails.
+> **Stage 12 runs before Stage 13 by design** — scan results reach DefectDojo even if the K8s manifest update fails.
 >
-> **Stage 9 must run before Stage 10** — Syft scans the local Docker image; Stage 10 removes it after scanning.
+> **Stage 10 must run before Stage 11** — Syft scans the local Docker image; Stage 11 removes it after scanning.
+>
+> **Stage 9 runs after Harbor push** — cosign signs the remote image in Harbor, does not need the local image.
 
 ---
 
@@ -65,6 +68,7 @@ This library provides a standardized DevSecOps pipeline template where **only th
 |:---------|:------------|
 | `buildArtifact` | Multi-language build orchestration. Auto-detects tool from project files; supports `buildTool`, `command`, and per-tool overrides. No `archiveArtifacts` — Harbor is the artifact store. |
 | `buildDockerImageAndPush` | Builds Docker image with `--build-arg` metadata (git commit, author, version). Pushes to Harbor, keeps local image for SBOM and vulnerability scanning, then removes it after Stage 10. Caps Docker build cache at 2 GB. |
+| `signImage` | Signs the pushed Harbor image using cosign (key-based). Signature stored as OCI artifact in Harbor alongside the image. Annotations: `git-commit`, `builder=jenkins`, `build-number`. Non-blocking: failure marks UNSTABLE. Requires cosign installed on Jenkins host and credentials `cosign-private-key` + `cosign-password`. |
 | `generateSbom` | Runs Syft against the local Docker image to produce a CycloneDX JSON SBOM. Uploads to Dependency-Track API (`autoCreate=true` — project is created on first run). Non-blocking: failure marks build UNSTABLE but does not halt delivery. Must run after `buildDockerImageAndPush` and before `vulnScanApplicationImage`. |
 | `owaspDependencyCheck` | Language-aware CVE scanning: OWASP Maven plugin, `npm audit`, `govulncheck` (Go), OWASP Gradle plugin, `dotnet list package`. `failOnCVSS` controls blocking vs reporting. |
 | `osvScanner` | Google OSV Scanner — complements OWASP, covers Python and all languages via OSV.dev database. No credentials required. |
@@ -155,8 +159,10 @@ environment {
 | `lsaid` | Username/Password | GitLab source and manifest repos |
 | `robot-jenkins` | Username/Password | Harbor robot account |
 | `nvd-api-key` | Secret text | NVD API key for OWASP scans — [register free](https://nvd.nist.gov/developers/request-an-api-key) |
-| `defectdojo-api-token` | Secret text | DefectDojo API token (Stage 11) |
-| `dependency-track-api-key` | Secret text | Dependency-Track API key (Stage 9 — SBOM upload) |
+| `defectdojo-api-token` | Secret text | DefectDojo API token (Stage 12) |
+| `dependency-track-api-key` | Secret text | Dependency-Track API key (Stage 10 — SBOM upload) |
+| `cosign-private-key` | Secret file | cosign.key — private signing key (Stage 9) |
+| `cosign-password` | Secret text | Password for the cosign private key (Stage 9) |
 
 ### How to get the Dependency-Track API key
 
@@ -236,6 +242,56 @@ K8S_MANIFEST_PATHS = '03-deployment.yaml,06-ingress.yaml'
 | `0` | Report only — never fails build (start here to see baseline) |
 | `7` | Fails on HIGH + CRITICAL CVEs |
 | `9` | Fails on CRITICAL only (recommended once team is ready) |
+
+---
+
+## Image Signing (cosign)
+
+### What it does
+
+Stage 9 signs every image pushed to Harbor using a private key. The signature is stored as an OCI artifact alongside the image — visible in Harbor under the image's artifact list.
+
+Anyone with the public key (`cosign.pub` in this repo) can verify that an image was built by Jenkins and was not modified after the build.
+
+### One-time setup
+
+```bash
+# 1. Install cosign on the Jenkins host
+COSIGN_VERSION=$(curl -s https://api.github.com/repos/sigstore/cosign/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+sudo curl -Lo /usr/local/bin/cosign "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64"
+sudo chmod +x /usr/local/bin/cosign
+
+# 2. Generate key pair (run once, keep private key secure)
+cosign generate-key-pair
+# Creates: cosign.key (private — add to Jenkins) and cosign.pub (public — commit to repo)
+
+# 3. Add to Jenkins credentials
+#    cosign.key  → Secret file,  ID: cosign-private-key
+#    password    → Secret text,  ID: cosign-password
+
+# 4. Commit the public key to this repo
+git add cosign.pub && git commit -m "Add cosign public key"
+```
+
+### Verifying a signed image
+
+```bash
+cosign verify \
+  --key cosign.pub \
+  --insecure-skip-tls-verify \
+  harbor.devops.softnethq.co.tz/softaml/my-service:42
+```
+
+Output shows the annotations embedded at signing time: `git-commit`, `builder=jenkins`, `build-number`.
+
+### What the signature proves
+
+| Claim | How |
+|:------|:----|
+| Built by Jenkins | `builder=jenkins` annotation, key held only by Jenkins |
+| Which commit | `git-commit` annotation matches GitLab history |
+| Which build | `build-number` annotation matches Jenkins build log |
+| Not tampered | cosign verifies image digest — any layer change invalidates the signature |
 
 ---
 
@@ -379,10 +435,11 @@ Both tools work together — DefectDojo handles what was found in this build; De
 | Dependencies (SCA) | OWASP / npm audit / govulncheck / OSV | 6 | DefectDojo |
 | Dockerfile | Trivy base image + OPA Conftest | 7 | DefectDojo + email |
 | Secrets in source | Gitleaks | 7 | DefectDojo |
-| Software Bill of Materials | Syft (CycloneDX) | 9 | Dependency-Track |
-| Application image (all layers) | Trivy | 10 | DefectDojo |
-| K8s manifests (IaC) | OPA Conftest | 10 + 12 | Pipeline log |
-| Security findings aggregation | DefectDojo | 11 | DefectDojo dashboard |
+| Image integrity (signing) | cosign | 9 | Harbor (OCI artifact) |
+| Software Bill of Materials | Syft (CycloneDX) | 10 | Dependency-Track |
+| Application image (all layers) | Trivy | 11 | DefectDojo |
+| K8s manifests (IaC) | OPA Conftest | 11 + 13 | Pipeline log |
+| Security findings aggregation | DefectDojo | 12 | DefectDojo dashboard |
 | Continuous CVE monitoring | Dependency-Track | Always (between builds) | Email / DT dashboard |
 
 ### OPA Dockerfile policies (`opa-docker-security.rego`)

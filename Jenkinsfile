@@ -264,7 +264,25 @@ pipeline {
             }
         }
 
-        // ── 9. SBOM GENERATION ────────────────────────────────────────────────
+        // ── 9. IMAGE SIGNING ──────────────────────────────────────────────────
+        // Signs the image already pushed to Harbor using cosign (key-based).
+        // Signature stored as OCI artifact in Harbor alongside the image.
+        // Proves the image was built by Jenkins and has not been tampered with.
+        // Non-blocking: failure marks build UNSTABLE, does not stop delivery.
+        stage('Sign Image') {
+            steps {
+                script {
+                    signImage(
+                        registryUrl:   env.REGISTRY_URL,
+                        harborProject: env.HARBOR_PROJECT,
+                        imageName:     env.IMAGE_NAME,
+                        imageTag:      env.BUILD_NUMBER
+                    )
+                }
+            }
+        }
+
+        // ── 10. SBOM GENERATION ───────────────────────────────────────────────
         // Generates CycloneDX SBOM from the local Docker image using Syft
         // and uploads it to Dependency-Track for continuous CVE monitoring.
         // Must run AFTER Docker build (needs local image) and BEFORE
@@ -281,7 +299,7 @@ pipeline {
             }
         }
 
-        // ── 10. VULNERABILITY SCAN - APPLICATION IMAGE ────────────────────────
+        // ── 11. VULNERABILITY SCAN - APPLICATION IMAGE ────────────────────────
         // Scans the BUILT image (all layers) — deeper than stage 7:
         //   1. Trivy Round 1: shows ALL HIGH+CRITICAL (informational)
         //   2. Trivy Round 2: CRITICAL only, fails build (enforcement)
@@ -293,7 +311,7 @@ pipeline {
         }
 
 
-        // ── 11. PUBLISH SECURITY RESULTS ──────────────────────────────────────
+        // ── 12. PUBLISH SECURITY RESULTS ──────────────────────────────────────
         // Publish here — BEFORE k8s manifest update
         // So even if k8s update fails, results are already in DefectDojo
         stage('Publish Security Results') {
@@ -302,7 +320,7 @@ pipeline {
             }
         }
 
-        // ── 12. K8S MANIFEST UPDATE ───────────────────────────────────────────
+        // ── 13. K8S MANIFEST UPDATE ───────────────────────────────────────────
         // Two options — choose ONE:
         //
         // Option A: updateK8sManifest()
