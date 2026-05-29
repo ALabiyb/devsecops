@@ -117,6 +117,9 @@ pipeline {
         DEFECTDOJO_URL           = 'https://defectdojo.devops.softnethq.co.tz'
         DEFECTDOJO_ENGAGEMENT_ID = '3'
 
+        // Dependency-Track — credential 'dependency-track-api-key' in Jenkins
+        DEPENDENCY_TRACK_URL     = 'https://dependencytrack.devops.softnethq.co.tz'
+
         // Auto-populated — do not edit
         GIT_COMMIT     = sh(script: 'git rev-parse HEAD 2>/dev/null || echo unknown', returnStdout: true).trim()
         GIT_AUTHOR     = sh(script: 'git log -1 --pretty=format:"%an" 2>/dev/null || echo unknown', returnStdout: true).trim()
@@ -261,7 +264,24 @@ pipeline {
             }
         }
 
-        // ── 9. VULNERABILITY SCAN - APPLICATION IMAGE ─────────────────────────
+        // ── 9. SBOM GENERATION ────────────────────────────────────────────────
+        // Generates CycloneDX SBOM from the local Docker image using Syft
+        // and uploads it to Dependency-Track for continuous CVE monitoring.
+        // Must run AFTER Docker build (needs local image) and BEFORE
+        // vulnScanApplicationImage (which removes the local image).
+        // Non-blocking: failure marks build UNSTABLE, does not stop delivery.
+        stage('Generate & Upload SBOM') {
+            steps {
+                script {
+                    generateSbom(
+                        projectName:    env.IMAGE_NAME,
+                        projectVersion: env.APP_VERSION
+                    )
+                }
+            }
+        }
+
+        // ── 10. VULNERABILITY SCAN - APPLICATION IMAGE ────────────────────────
         // Scans the BUILT image (all layers) — deeper than stage 7:
         //   1. Trivy Round 1: shows ALL HIGH+CRITICAL (informational)
         //   2. Trivy Round 2: CRITICAL only, fails build (enforcement)
@@ -273,7 +293,7 @@ pipeline {
         }
 
 
-        // ── 10. PUBLISH SECURITY RESULTS ──────────────────────────────────────
+        // ── 11. PUBLISH SECURITY RESULTS ──────────────────────────────────────
         // Publish here — BEFORE k8s manifest update
         // So even if k8s update fails, results are already in DefectDojo
         stage('Publish Security Results') {
@@ -282,7 +302,7 @@ pipeline {
             }
         }
 
-        // ── 11. K8S MANIFEST UPDATE ───────────────────────────────────────────
+        // ── 12. K8S MANIFEST UPDATE ───────────────────────────────────────────
         // Two options — choose ONE:
         //
         // Option A: updateK8sManifest()
