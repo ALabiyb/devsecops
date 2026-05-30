@@ -35,6 +35,10 @@ def call(Map params = [:]) {
 
         def k8sDir = params.k8sDir ?: detectK8sDir()
 
+        // Write OPA policy from shared library — no need to copy rego to project repos
+        writeFile file: 'opa-k8s-security.rego',
+                  text: libraryResource('opa/opa-k8s-security.rego')
+
         try {
             parallel(
 

@@ -92,14 +92,19 @@ This library provides a standardized DevSecOps pipeline template where **only th
 
 ## Quick Start
 
-### 1. Add policy files to your application repo
+### 1. Add the following files to your application repo
 
 | File | Purpose |
 |:-----|:--------|
 | `Dockerfile` | Container definition |
-| `opa-docker-security.rego` | Dockerfile policy (no root, no `latest`, no secrets in ENV, etc.) |
-| `opa-k8s-security.rego` | K8s manifest policy (non-root, resource limits, no privileged, etc.) |
 | `trivy-docker-image-scan.sh` | Trivy base image scan script |
+
+> **OPA policies are centralised — nothing to copy.**
+> `opa-docker-security.rego` and `opa-k8s-security.rego` live in
+> `resources/opa/` inside this shared library. Both `vulnScanDocker`
+> and `vulnScanApplicationImage` load them automatically via
+> `libraryResource()` at runtime. You no longer need to copy these
+> files into each service repo.
 
 ### 2. Copy the Jenkinsfile template
 
@@ -446,6 +451,17 @@ Both tools work together — DefectDojo handles what was found in this build; De
 | Dynamic scanning (DAST) | OWASP ZAP | 14 | DefectDojo + Jenkins artifact |
 | Continuous CVE monitoring | Dependency-Track | Always (between builds) | Email / DT dashboard |
 
+### OPA Policies — Centralised in Shared Library
+
+Both policy files live in `resources/opa/` inside this repo and are loaded automatically by the pipeline at runtime — **no copying to service repos required**.
+
+| File | Loaded by | Stage |
+|:-----|:----------|:------|
+| `resources/opa/opa-docker-security.rego` | `vulnScanDocker` | 7 |
+| `resources/opa/opa-k8s-security.rego` | `vulnScanApplicationImage` | 11 |
+
+To update a policy for all services at once, edit the file here and push. Every pipeline run picks up the change automatically.
+
 ### OPA Dockerfile policies (`opa-docker-security.rego`)
 
 - No secrets in `ENV` variables
@@ -545,6 +561,6 @@ Services without a staging URL skip DAST automatically — no error, no change n
 
 ---
 
-**Last Updated**: 2026-05-29
-**Library Version**: 4.0
+**Last Updated**: 2026-05-30
+**Library Version**: 5.1
 **Maintained by**: DevOps Engineering Team — softnethq.co.tz

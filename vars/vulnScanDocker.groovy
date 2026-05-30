@@ -19,6 +19,10 @@ def call(Map params = [:]) {
         def trivyBaseHtml     = 'trivy-base-report.html'
         def trivyBaseJson     = 'trivy-base-report.json'
 
+        // Write OPA policy from shared library — no need to copy rego to project repos
+        writeFile file: 'opa-docker-security.rego',
+                  text: libraryResource('opa/opa-docker-security.rego')
+
         parallel(
 
             // -----------------------------------------------------------------
