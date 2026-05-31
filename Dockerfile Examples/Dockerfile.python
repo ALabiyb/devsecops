@@ -1,7 +1,10 @@
 # =============================================================================
 # Production Dockerfile — Python (FastAPI / Flask)
 # Used by: PEP Sanctions Connector and any Python-based microservice
-# Runs as non-root user — satisfies OPA security policy
+# Runs as a numeric non-root user — satisfies OPA + Kubernetes runAsNonRoot
+#
+# Follows Sysdig Dockerfile best practices: pinned minimal base, numeric
+# non-root user, COPY --chown, layer-cached deps, .dockerignore (see template).
 # =============================================================================
 
 FROM python:3.12-alpine
@@ -25,33 +28,35 @@ RUN apk add --no-cache tzdata && \
     echo "${APP_TIMEZONE}" > /etc/timezone && \
     apk del tzdata
 
+# Don't write .pyc files / buffer stdout — cleaner containers, real-time logs
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
-# Create non-root user before installing anything
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+# Create numeric non-root user before installing anything
+RUN addgroup -g 10001 -S appgroup && adduser -u 10001 -S appuser -G appgroup
 
-# Install dependencies as root (pip needs write access to site-packages)
+# Install dependencies as root (pip needs write access to site-packages).
 # Copy requirements first for better layer caching — only re-runs if
-# requirements.txt changes, not on every code change
+# requirements.txt changes, not on every code change.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY . .
-
-# Give ownership of the app directory to non-root user
-RUN chown -R appuser:appgroup /app
+# Copy application code, owned by the non-root user
+COPY --chown=appuser:appgroup . .
 
 # Switch to non-root for runtime — all subsequent commands run as appuser
-USER appuser
+USER 10001
 
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD wget -qO- http://localhost:8000/health || exit 1
 
-# FastAPI with uvicorn — change to 'gunicorn app:app' for Flask
-# --workers: number of worker processes (adjust based on container CPU limit)
+# FastAPI with uvicorn. For Flask use:
+#   CMD ["gunicorn", "app:app", "--workers", "2", "--bind", "0.0.0.0:8000"]
+# --workers: number of worker processes (rule of thumb: 2 × CPU cores + 1)
 CMD ["uvicorn", "app.main:app", \
      "--host", "0.0.0.0", \
      "--port", "8000", \

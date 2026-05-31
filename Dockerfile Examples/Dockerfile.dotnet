@@ -1,12 +1,15 @@
 # =============================================================================
 # Production Dockerfile — .NET ASP.NET Core
 # Multi-stage: SDK for building, ASP.NET runtime only for running
-# Runs as non-root user — satisfies OPA security policy
+# Runs as a numeric non-root user — satisfies OPA + Kubernetes runAsNonRoot
 #
 # WHY MULTI-STAGE FOR .NET?
 #   Build stage uses the full .NET SDK (~700MB) to compile the app.
 #   Runtime stage uses only the ASP.NET runtime (~200MB) — no SDK, no compiler.
 #   This follows Microsoft's official production recommendation.
+#
+# Follows Sysdig Dockerfile best practices: multi-stage, pinned minimal base,
+# numeric non-root user, COPY --chown, layer-cached restore, .dockerignore.
 # =============================================================================
 
 # ── STAGE 1: BUILD ────────────────────────────────────────────────────────────
@@ -51,7 +54,7 @@ RUN apk add --no-cache tzdata && \
     apk del tzdata
 
 # ASP.NET Core configuration
-# Use port 8080 so the app runs on non-privileged port
+# Use port 8080 so the app runs on a non-privileged port (<1024 needs root)
 ENV ASPNETCORE_URLS=http://+:8080
 ENV ASPNETCORE_ENVIRONMENT=Production
 ENV DOTNET_RUNNING_IN_CONTAINER=true
@@ -60,15 +63,13 @@ ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false
 
 WORKDIR /app
 
-# Create non-root user
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+# Create numeric non-root user
+RUN addgroup -g 10001 -S appgroup && adduser -u 10001 -S appuser -G appgroup
 
-# Copy published output from build stage
-COPY --from=builder /app/publish .
+# Copy published output from build stage, owned by the non-root user
+COPY --from=builder --chown=appuser:appgroup /app/publish .
 
-RUN chown -R appuser:appgroup /app
-
-USER appuser
+USER 10001
 
 EXPOSE 8080
 

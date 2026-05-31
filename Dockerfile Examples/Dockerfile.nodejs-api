@@ -2,7 +2,10 @@
 # Production Dockerfile — Node.js Express / NestJS API
 # Use this when your Node.js project is a BACKEND API (not a frontend app).
 # For frontend React/Next.js projects use Dockerfile.react-nginx instead.
-# Runs as non-root user — satisfies OPA security policy
+# Runs as a numeric non-root user — satisfies OPA + Kubernetes runAsNonRoot
+#
+# Follows Sysdig Dockerfile best practices: pinned minimal base, numeric
+# non-root user, COPY --chown, prod-only deps, .dockerignore (see template).
 # =============================================================================
 
 FROM node:20-alpine
@@ -31,21 +34,19 @@ ENV NODE_ENV=production
 
 WORKDIR /app
 
-# Create non-root user before installing dependencies
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+# Create numeric non-root user before installing dependencies.
+RUN addgroup -g 10001 -S appgroup && adduser -u 10001 -S appuser -G appgroup
 
-# Copy package files and install production dependencies only
-# npm ci --omit=dev skips devDependencies (test frameworks, build tools, etc.)
-COPY package.json package-lock.json ./
+# Copy package files (owned by the app user) and install production deps only.
+# npm ci --omit=dev skips devDependencies (test frameworks, build tools, etc.).
+COPY --chown=appuser:appgroup package.json package-lock.json ./
 RUN npm ci --omit=dev --frozen-lockfile && \
     npm cache clean --force
 
-# Copy application source
-COPY . .
+# Copy application source, owned by the non-root user
+COPY --chown=appuser:appgroup . .
 
-RUN chown -R appuser:appgroup /app
-
-USER appuser
+USER 10001
 
 EXPOSE 3000
 
@@ -53,5 +54,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD wget -qO- http://localhost:3000/health || exit 1
 
 # Use node directly — not npm start — to get proper signal handling
-# (npm wraps node and can cause issues with SIGTERM in Kubernetes)
+# (npm wraps node and can swallow SIGTERM in Kubernetes).
+# Adjust the entrypoint to your project: src/main.js, dist/main.js (NestJS), etc.
 CMD ["node", "src/main.js"]
