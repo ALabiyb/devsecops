@@ -73,6 +73,9 @@ USER 10001
 
 EXPOSE 8080
 
+# wget is provided by BusyBox on Alpine. If you switch off -alpine (e.g. to
+# mcr.microsoft.com/dotnet/aspnet:8.0 on Debian), there is no wget — replace
+# this with `curl -fsS http://localhost:8080/health` or a dotnet health probe.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD wget -qO- http://localhost:8080/health || exit 1
 
