@@ -6,6 +6,15 @@ This document explains every Dockerfile we use across all services — what each
 
 ---
 
+## Standards We Follow
+
+These Dockerfiles follow the [Sysdig Dockerfile best practices](https://sysdig.com/blog/dockerfile-best-practices/):
+multi-stage builds, minimal pinned base images (no `:latest`), a least-privilege
+**numeric** non-root user, `COPY --chown` (not `RUN chown`), `COPY` not `ADD`, a
+`.dockerignore` to keep secrets and bloat out of the build context, no secrets in
+`ENV`, and image scanning (Trivy) in the pipeline. The OPA policy below enforces
+the subset of these that can be checked automatically.
+
 ## Why These Rules Exist
 
 Our pipeline runs OPA Conftest on every Dockerfile before building. If your Dockerfile violates any of the following rules, the build fails immediately and nothing gets deployed.
@@ -92,23 +101,55 @@ We do NOT use multi-stage for Java Spring Boot because the JAR is already compil
 Every Dockerfile follows this pattern for running as non-root:
 
 ```dockerfile
-# 1. Create the group and user (as root — this is fine, happens at build time)
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+# 1. Create the group and user with an explicit NUMERIC UID/GID
+#    (as root — this is fine, it happens at build time)
+RUN addgroup -g 10001 -S appgroup && adduser -u 10001 -S appuser -G appgroup
 
-# 2. Copy your application files (still as root)
-COPY target/*.jar app.jar
+# 2. Copy your application files AND set ownership in one step (--chown)
+COPY --chown=appuser:appgroup target/*.jar app.jar
 
-# 3. Give ownership of files to the non-root user
-RUN chown -R appuser:appgroup /app
+# 3. Switch to non-root using the NUMERIC UID for everything that follows
+USER 10001
 
-# 4. Switch to non-root for everything that follows
-USER appuser
-
-# 5. All runtime commands (EXPOSE, HEALTHCHECK, CMD, ENTRYPOINT)
+# 4. All runtime commands (EXPOSE, HEALTHCHECK, CMD, ENTRYPOINT)
 #    now run as appuser, not root
 ```
 
-The `-S` flags mean: `-S` creates a system user/group (no login shell, no home directory, no password). This is more restrictive than a regular user, which is what we want for a service account.
+The `-S` flags create a *system* user/group (no login shell, no home directory,
+no password) — more restrictive than a regular user, which is what we want for a
+service account.
+
+**Why a NUMERIC UID in `USER` (Sysdig best practice):** Kubernetes
+`securityContext.runAsNonRoot: true` can only *verify* that a container is
+non-root when the image declares a numeric UID. If you write `USER appuser`,
+Kubernetes cannot resolve the name to a UID at admission time and the check is
+unreliable. `USER 10001` is unambiguous and provably non-zero.
+
+**Why `COPY --chown` instead of a separate `RUN chown -R`:** a `RUN chown -R`
+duplicates every copied file into a new image layer (doubling the app's size on
+disk). `COPY --chown` sets ownership in the same layer — smaller image, one
+fewer layer.
+
+---
+
+## The .dockerignore File (do not skip this)
+
+Every Dockerfile here uses `COPY . .` at some point. Without a `.dockerignore` in
+your project root, that copies your **entire repository** into the build context
+and image — including `.git/` history, local `.env` secrets, and `node_modules`.
+This bloats the image, slows the build, and can **bake secrets into a layer** that
+ships to Harbor.
+
+A ready-made template is provided: **`dockerignore.example`**. Copy it into your
+project root and rename it:
+
+```bash
+cp dockerignore.example /path/to/your/project/.dockerignore
+```
+
+Then adjust per project. One important exception: the **Spring Boot** image needs
+the Maven output, so do **not** ignore `target/` for Java services (Jenkins builds
+`target/*.jar` on the host and the Dockerfile copies it).
 
 ---
 
@@ -308,7 +349,10 @@ Maven has not run yet or ran in a different directory. Ensure the Jenkins pipeli
 Change your FROM line from `FROM eclipse-temurin:latest` to `FROM eclipse-temurin:21-jre-alpine`. Always use a specific version tag.
 
 **OPA fails with "container must not run as root"**
-Add a `USER` instruction before `CMD`/`ENTRYPOINT`. Create the user with `addgroup` and `adduser` first.
+Add a `USER` instruction before `CMD`/`ENTRYPOINT`. Create the user with `addgroup` and `adduser` first, and use the NUMERIC UID in `USER` (e.g. `USER 10001`).
+
+**Kubernetes rejects the pod with "container has runAsNonRoot and image will run as root"**
+Your `USER` uses a name, not a number. Kubernetes cannot verify a username is non-root. Change `USER appuser` to `USER 10001` (the numeric UID you created).
 
 **Trivy fails with CRITICAL CVEs in base image**
 Update to a newer patch version of your base image. For example, change `eclipse-temurin:21.0.1-jre-alpine` to `eclipse-temurin:21.0.5-jre-alpine`. Check https://hub.docker.com for the latest patch version.

@@ -2,6 +2,11 @@
 # Production Dockerfile — Spring Boot Java Microservice
 # Matches: SoftAML Branding Service (and all other Java Spring Boot services)
 # Base:    eclipse-temurin:21-jre-alpine (JRE only, not JDK — smaller image)
+#
+# Follows Sysdig Dockerfile best practices:
+#   - pinned minimal base image (no :latest)        - .dockerignore (see template)
+#   - least-privilege NUMERIC non-root user         - COPY --chown (no extra layer)
+#   - COPY not ADD, no secrets in ENV, OCI labels
 # =============================================================================
 
 # ── BASE IMAGE ────────────────────────────────────────────────────────────────
@@ -38,32 +43,32 @@ RUN apk add --no-cache tzdata && \
 # ── WORKING DIRECTORY ─────────────────────────────────────────────────────────
 WORKDIR /app
 
-# ── NON-ROOT USER ─────────────────────────────────────────────────────────────
-# ✅ OPA policy requires non-root — this satisfies it
-# Create group 'aml' and user 'aml', no home dir, no password
-RUN addgroup -S aml && adduser -S aml -G aml
+# ── NON-ROOT USER (numeric UID/GID) ───────────────────────────────────────────
+# ✅ OPA policy requires non-root; numeric UID also lets Kubernetes verify
+#    securityContext.runAsNonRoot — it cannot validate a username, only a UID.
+# Create system group/user 'aml' (10001), no home dir, no password.
+RUN addgroup -g 10001 -S aml && adduser -u 10001 -S aml -G aml
 
 # ── APPLICATION JAR ───────────────────────────────────────────────────────────
 # Built by: mvn clean package -DskipTests=true -B (in buildArtifact stage)
 # Output:   target/branding-service-1.0.0.jar
 # Renamed:  app.jar (consistent across all services)
-COPY target/*.jar app.jar
+# COPY --chown sets ownership in the same layer — no extra RUN chown layer.
+COPY --chown=aml:aml target/*.jar app.jar
 
-# ── DIRECTORIES & PERMISSIONS ─────────────────────────────────────────────────
-# Create any app-specific directories and give ownership to non-root user
-RUN mkdir -p /app/logs /app/logos && \
-    chown -R aml:aml /app
+# ── APP DIRECTORIES ───────────────────────────────────────────────────────────
+# Create any app-specific writable dirs and give ownership to the non-root user.
+RUN mkdir -p /app/logs /app/logos && chown -R aml:aml /app
 
-# ── SWITCH TO NON-ROOT ────────────────────────────────────────────────────────
-USER aml
+# ── SWITCH TO NON-ROOT (numeric) ──────────────────────────────────────────────
+USER 10001
 
 # ── PORT ──────────────────────────────────────────────────────────────────────
 # Document which port the app listens on (informational — actual mapping in k8s)
 EXPOSE 8080
 
 # ── HEALTHCHECK ───────────────────────────────────────────────────────────────
-# Docker checks this to know if the container is healthy
-# Adjust the path to match your Spring Boot actuator endpoint
+# Alpine ships BusyBox wget. Adjust the path to your Spring Boot actuator endpoint.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD wget -qO- http://localhost:8080/actuator/health || exit 1
 

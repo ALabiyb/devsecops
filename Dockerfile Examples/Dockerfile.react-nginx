@@ -1,6 +1,9 @@
 # =============================================================================
 # Production Dockerfile — React / Next.js / Vite Frontend
-# Runs as non-root user — satisfies OPA security policy
+# Runs as a numeric non-root user — satisfies OPA + Kubernetes runAsNonRoot
+#
+# Follows Sysdig Dockerfile best practices: multi-stage (drops node_modules),
+# pinned minimal base, numeric non-root user, .dockerignore (see template).
 #
 # KEY SECURITY DECISIONS:
 #   - Uses nginxinc/nginx-unprivileged (official non-root nginx image)
@@ -50,9 +53,10 @@ COPY nginx.conf /etc/nginx/conf.d/default.conf
 # Next.js static:  COPY --from=builder /app/out
 COPY --from=builder /app/dist /usr/share/nginx/html
 
-# nginx-unprivileged already runs as nginx (UID 101) — no USER needed
-# but we declare it explicitly so OPA policy sees a non-root USER
-USER nginx
+# nginx-unprivileged already runs as nginx (UID 101) — no USER needed, but we
+# declare it explicitly as the NUMERIC UID so OPA sees a non-root USER and
+# Kubernetes can verify securityContext.runAsNonRoot (it cannot validate a name).
+USER 101
 
 # Must use 8080 — non-root cannot bind to ports below 1024
 EXPOSE 8080

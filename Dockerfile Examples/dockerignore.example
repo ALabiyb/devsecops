@@ -1,0 +1,69 @@
+# =============================================================================
+# .dockerignore — copy this to your project root AS ".dockerignore"
+#   cp dockerignore.example /path/to/your/project/.dockerignore
+#
+# WHY THIS MATTERS (Sysdig best practice):
+#   Every Dockerfile here uses `COPY . .`. Without a .dockerignore, that copies
+#   your ENTIRE repo into the image and build context — including .git history,
+#   local .env secrets, and node_modules. That bloats the image, slows the
+#   build, and can BAKE SECRETS into a layer that ships to Harbor.
+#   A .dockerignore keeps the build context lean and secret-free.
+# =============================================================================
+
+# ── Version control & CI ──
+.git
+.gitignore
+.github
+.gitlab-ci.yml
+Jenkinsfile
+
+# ── Secrets & local config (NEVER ship these) ──
+.env
+.env.*
+*.pem
+*.key
+*.p12
+secrets/
+**/application-local.yml
+
+# ── Docs & meta ──
+README.md
+*.md
+LICENSE
+docs/
+
+# ── Node.js ──
+node_modules
+npm-debug.log
+yarn-error.log
+dist
+build
+.next
+coverage
+
+# ── Python ──
+__pycache__/
+*.pyc
+.venv
+venv/
+.pytest_cache
+*.egg-info
+
+# ── Java / Maven / Gradle (JAR is built by Jenkins, copied via target/*.jar) ──
+# NOTE: do NOT ignore target/ for the Spring Boot image — it needs target/*.jar.
+.gradle
+build/libs
+
+# ── Go ──
+# (binary is built inside the image; nothing host-side to ignore by default)
+
+# ── .NET ──
+bin/
+obj/
+
+# ── IDE / OS noise ──
+.idea
+.vscode
+*.iml
+.DS_Store
+Thumbs.db
