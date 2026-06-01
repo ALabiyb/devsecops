@@ -94,7 +94,7 @@ def buildMaven(Map params) {
         sh 'mvn -version'
 
         // Override: buildArtifact(command: 'mvn clean package -Pproduction -B')
-        def buildCmd = params.command ?: 'mvn clean package -DskipTests=true -B'
+        def buildCmd = params.command ?: 'mvn clean package'
         echo "Running: ${buildCmd}"
         sh buildCmd
 
