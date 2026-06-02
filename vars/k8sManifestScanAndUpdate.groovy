@@ -168,25 +168,21 @@ def call(Map params = [:]) {
         }
 
         // ── OPA SCAN — scan AFTER update, BEFORE pushing ──────────────────────
-        // This ensures the updated manifests (with new image tag) comply with
-        // security policies before they are pushed to the k8s manifest repo
+        // Policy fetched from shared library — no copy needed in project repos
         echo "=== OPA Security Scan of Updated Manifests ==="
         def opaPolicyFile = "${env.WORKSPACE}/opa-k8s-security.rego"
+        writeFile file: opaPolicyFile,
+                  text: libraryResource('opa/opa-k8s-security.rego')
 
-        if (fileExists(opaPolicyFile)) {
-            sh """
-                docker run --rm \
-                    -v ${tempDir}:/project \
-                    -v ${opaPolicyFile}:/opa-k8s-security.rego \
-                    openpolicyagent/conftest:latest test \
-                    --policy /opa-k8s-security.rego \
-                    /project
-            """
-            echo "✅ OPA K8s security scan passed"
-        } else {
-            echo "⚠️  opa-k8s-security.rego not found in workspace — skipping OPA scan"
-            echo "ℹ️  Add opa-k8s-security.rego to your project repo root to enable K8s policy scanning"
-        }
+        sh """
+            docker run --rm \
+                -v ${tempDir}:/project \
+                -v ${opaPolicyFile}:/opa-k8s-security.rego \
+                openpolicyagent/conftest:latest test \
+                --policy /opa-k8s-security.rego \
+                /project
+        """
+        echo "✅ OPA K8s security scan passed"
 
         // ── COMMIT AND PUSH ───────────────────────────────────────────────────
         dir(tempDir) {
