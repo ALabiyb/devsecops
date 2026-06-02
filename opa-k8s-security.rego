@@ -1,7 +1,15 @@
 package main
-# === Deny resources without namespace (except Namespace itself) ===
+
+# Cluster-scoped resources have no namespace by design — skip the namespace check for these.
+cluster_scoped_kinds := {
+    "Namespace", "ClusterRole", "ClusterRoleBinding",
+    "PersistentVolume", "StorageClass", "IngressClass",
+    "CustomResourceDefinition", "PriorityClass", "RuntimeClass"
+}
+
+# === Deny resources without namespace (except cluster-scoped kinds) ===
 violation contains msg if {
-    input.kind != "Namespace"
+    not input.kind in cluster_scoped_kinds
     not input.metadata.namespace
     msg := sprintf("Resource %s '%s' must specify a namespace", [input.kind, input.metadata.name])
 }
