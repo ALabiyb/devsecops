@@ -54,7 +54,7 @@ def call(Map params = [:]) {
         withCredentials([string(credentialsId: credId, variable: 'DT_API_KEY')]) {
             def httpCode = sh(
                 script: """
-                    curl -sf \
+                    curl -s \
                       --connect-timeout 30 \
                       --max-time 120 \
                       -X POST \
@@ -72,7 +72,7 @@ def call(Map params = [:]) {
             if (httpCode == '200') {
                 echo "✅ SBOM uploaded to Dependency-Track — project '${projectName}' version '${projectVersion}'"
             } else {
-                error "Dependency-Track rejected the upload (HTTP ${httpCode})"
+                error "Dependency-Track rejected the upload (HTTP ${httpCode}) — check API key and project permissions"
             }
         }
 
