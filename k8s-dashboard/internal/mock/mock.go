@@ -3,9 +3,13 @@
 //   - You run locally with no kubeconfig (pure UI testing)
 //   - You pass the -mock flag at startup
 //
-// The mock simulates real-world chaos: most services are healthy, but a few
-// are in CrashLoop or Pending so you can see all three health states in the UI.
-// It also randomly flips one service every 2 minutes so email alerts fire.
+// Health distribution (always visible on the dashboard):
+//   Critical  — ecommerce   (3 broken services, score ~62%)
+//   Degraded  — analytics, auth  (1 broken each, score ~83-87%)
+//   Healthy   — all remaining namespaces
+//
+// On top of the static failures, one "flapping" service randomly breaks/recovers
+// every few polls to simulate real-world churn and trigger state-change alerts.
 package mock
 
 import (
@@ -15,19 +19,32 @@ import (
 	"github.com/yourorg/k8s-dashboard/internal/collector"
 )
 
-// unstableServices is the pool of services that randomly break/recover.
-// This makes the dashboard feel alive during a demo.
-var unstableServices = []string{"ingestion-worker", "ml-pipeline", "oauth-proxy"}
+// flappingPool is the pool of services that randomly break/recover between polls.
+var flappingPool = []string{"ingestion-worker", "billing-deployment", "nginx-gateway"}
 
-// seed the random generator once at startup
-var rng = rand.New(rand.NewSource(time.Now().UnixNano()))
+// staticIssues defines services that are always broken so the dashboard always
+// has an Issues section — makes the demo useful without a real cluster.
+var staticIssues = map[string][]struct{ name, status, reason string }{
+	// ecommerce: 3 broken out of 8 → 62% healthy → Critical (red)
+	"ecommerce": {
+		{name: "payment-service",     status: "Unhealthy", reason: "CrashLoopBackOff"},
+		{name: "cart-service",        status: "Unhealthy", reason: "OOMKilled"},
+		{name: "notification-worker", status: "Degraded",  reason: "1/2 pods ready"},
+	},
+	// analytics: 1 broken out of 8 → 87% healthy → Degraded (amber)
+	"analytics": {
+		{name: "ml-pipeline", status: "Unhealthy", reason: "OOMKilled"},
+	},
+	// auth: 1 broken out of 6 → 83% healthy → Degraded (amber)
+	"auth": {
+		{name: "oauth-proxy", status: "Unhealthy", reason: "ImagePullBackOff"},
+	},
+}
 
-// products defines the mock namespace/service structure.
-// Edit this to match your real product names for a more realistic preview.
 var products = []struct {
 	namespace string
-	deploys   []string // Deployments (app services)
-	sts       []string // StatefulSets (databases, kafka, redis, etc.)
+	deploys   []string
+	sts       []string
 }{
 	{
 		namespace: "ecommerce",
@@ -61,79 +78,87 @@ var products = []struct {
 	},
 }
 
+var rng = rand.New(rand.NewSource(time.Now().UnixNano()))
+
 // Collector is the mock implementation — same interface as the real collector.
 type Collector struct {
-	// brokenService is randomly picked each call to simulate flapping
-	brokenService string
+	flapping string // the one service randomly breaking/recovering each poll
 }
 
-// New creates a mock Collector with one randomly broken service.
+// New creates a mock Collector with one randomly broken flapping service.
 func New() *Collector {
 	return &Collector{
-		brokenService: unstableServices[rng.Intn(len(unstableServices))],
+		flapping: flappingPool[rng.Intn(len(flappingPool))],
 	}
 }
 
 // CollectAll returns fake namespace snapshots that look like real k8s data.
-// Call this in place of the real collector.CollectAll during mock mode.
 func (c *Collector) CollectAll() []collector.NamespaceSnapshot {
-	// Randomly rotate the broken service every call (simulates flapping)
-	// In a real demo this makes one product occasionally go amber/red
-	if rng.Float32() < 0.15 { // 15% chance to flip on each poll
-		c.brokenService = unstableServices[rng.Intn(len(unstableServices))]
+	// 15% chance per poll to flip the flapping service — simulates real-world churn
+	if rng.Float32() < 0.15 {
+		c.flapping = flappingPool[rng.Intn(len(flappingPool))]
 	}
 
 	var snapshots []collector.NamespaceSnapshot
-
 	for _, p := range products {
 		snap := collector.NamespaceSnapshot{Namespace: p.namespace}
-
-		// Add Deployments
 		for _, name := range p.deploys {
-			snap.Services = append(snap.Services, c.makeService(name, "Deployment"))
+			snap.Services = append(snap.Services, c.makeService(p.namespace, name, "Deployment"))
 		}
-		// Add StatefulSets
 		for _, name := range p.sts {
-			snap.Services = append(snap.Services, c.makeService(name, "StatefulSet"))
+			snap.Services = append(snap.Services, c.makeService(p.namespace, name, "StatefulSet"))
 		}
-
 		snapshots = append(snapshots, snap)
 	}
-
 	return snapshots
 }
 
-// makeService builds a realistic ServiceState.
-// Most services are healthy; the brokenService gets a CrashLoopBackOff.
-func (c *Collector) makeService(name, kind string) collector.ServiceState {
-	// The one "broken" service gets an unhealthy state
-	if name == c.brokenService {
-		// Randomly pick between different failure modes so it looks realistic
+// makeService builds a ServiceState, applying static issues first, then the flapping override.
+func (c *Collector) makeService(namespace, name, kind string) collector.ServiceState {
+	// Static issues — always broken so the Issues section is always populated
+	for _, issue := range staticIssues[namespace] {
+		if issue.name == name {
+			ready := int32(0)
+			if issue.status == "Degraded" {
+				ready = 1
+			}
+			return collector.ServiceState{
+				Name:    name,
+				Kind:    kind,
+				Status:  issue.status,
+				Reason:  issue.reason,
+				Ready:   ready,
+				Desired: 2,
+			}
+		}
+	}
+
+	// Randomly flapping service — breaks and recovers across polls
+	if name == c.flapping {
 		failures := []struct{ status, reason string }{
 			{"Unhealthy", "CrashLoopBackOff"},
 			{"Unhealthy", "OOMKilled"},
-			{"Degraded", "Pending"},
+			{"Degraded", "1/2 pods ready"},
 		}
 		f := failures[rng.Intn(len(failures))]
+		ready := int32(0)
+		if f.status == "Degraded" {
+			ready = 1
+		}
 		return collector.ServiceState{
-			Name:      name,
-			Kind:      kind,
-			Namespace: "",
-			Status:    f.status,
-			Reason:    f.reason,
-			Ready:     0,
-			Desired:   2,
+			Name: name, Kind: kind,
+			Status: f.status, Reason: f.reason,
+			Ready: ready, Desired: 2,
 		}
 	}
 
 	// Everything else is healthy
 	return collector.ServiceState{
-		Name:      name,
-		Kind:      kind,
-		Namespace: "",
-		Status:    "Healthy",
-		Reason:    "2/2 pods ready",
-		Ready:     2,
-		Desired:   2,
+		Name:    name,
+		Kind:    kind,
+		Status:  "Healthy",
+		Reason:  "2/2 pods ready",
+		Ready:   2,
+		Desired: 2,
 	}
 }
