@@ -16,7 +16,7 @@
  *   build-number → Jenkins build number
  *
  * Verification (run anywhere with cosign + cosign.pub from this repo):
- *   cosign verify --key cosign.pub --insecure-skip-tls-verify <image>
+ *   COSIGN_INSECURE_SKIP_TLS_VERIFY=true cosign verify --key cosign.pub <image>
  *
  * Jenkins requirements:
  *   cosign installed on Jenkins host: /usr/local/bin/cosign
@@ -43,8 +43,8 @@ def call(Map params = [:]) {
         ]) {
             sh """
                 COSIGN_PASSWORD="\${COSIGN_PASS}" \
+                COSIGN_INSECURE_SKIP_TLS_VERIFY=true \
                 cosign sign --key "\${COSIGN_KEY_FILE}" \
-                  --insecure-skip-tls-verify \
                   --yes \
                   -a "git-commit=${env.GIT_COMMIT}" \
                   -a "builder=jenkins" \
@@ -54,7 +54,7 @@ def call(Map params = [:]) {
         }
 
         echo "✅ Signature pushed to Harbor alongside image: ${fullImage}"
-        echo "   Verify with: cosign verify --key cosign.pub --insecure-skip-tls-verify ${fullImage}"
+        echo "   Verify with: COSIGN_INSECURE_SKIP_TLS_VERIFY=true cosign verify --key cosign.pub ${fullImage}"
 
     } catch (e) {
         // Non-blocking: signing failure marks UNSTABLE but does not stop delivery
