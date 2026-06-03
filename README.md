@@ -12,13 +12,14 @@ A production-grade Jenkins shared library that automates the complete DevSecOps 
 4. [Quick Start](#quick-start)
 5. [Jenkins One-Time Setup](#jenkins-one-time-setup)
 6. [Kubernetes Manifest Management](#kubernetes-manifest-management)
-7. [Dependency Scanning](#dependency-scanning)
-8. [SBOM & Dependency-Track](#sbom--dependency-track)
-9. [DefectDojo Integration](#defectdojo-integration)
-10. [Disk Management](#disk-management)
-11. [Configuration Reference](#configuration-reference)
-12. [Security & Compliance](#security--compliance)
-13. [Best Practices](#best-practices)
+7. [Production Approval (prod branch)](#production-approval-prod-branch)
+8. [Dependency Scanning](#dependency-scanning)
+9. [SBOM & Dependency-Track](#sbom--dependency-track)
+10. [DefectDojo Integration](#defectdojo-integration)
+11. [Disk Management](#disk-management)
+12. [Configuration Reference](#configuration-reference)
+13. [Security & Compliance](#security--compliance)
+14. [Best Practices](#best-practices)
 
 ---
 
@@ -50,8 +51,9 @@ This library provides a standardized DevSecOps pipeline template where **only th
 | 10 | **Generate & Upload SBOM** | Syft generates CycloneDX SBOM from local image → uploaded to Dependency-Track |
 | 11 | **Vuln Scan — App Image** | Trivy full image (all layers) + OPA K8s manifest policies; removes local image |
 | 12 | **Publish Security Results** | Uploads all scan reports to DefectDojo; sends results email |
-| 13 | **K8s Manifest Update** | Updates image tag in manifest repo (+ optional OPA scan), commits & pushes |
-| 14 | **DAST Scan** | OWASP ZAP scans the live staging URL after deploy — passive baseline scan, findings go to DefectDojo |
+| 13 | **Production Approval** *(prod branch only)* | Emails team for approval, pauses pipeline up to 30 min; on approval updates manifest with release version tag; on reject/timeout sends notification and fails |
+| 14 | **K8s Manifest Update** *(non-prod branches)* | Updates image tag in manifest repo (+ optional OPA scan), commits & pushes; skipped on `prod` (handled by stage 13) |
+| 15 | **DAST Scan** | OWASP ZAP scans the live staging URL after deploy — passive baseline scan, findings go to DefectDojo |
 
 > **Stage 12 runs before Stage 13 by design** — scan results reach DefectDojo even if the K8s manifest update fails.
 >
@@ -79,6 +81,7 @@ This library provides a standardized DevSecOps pipeline template where **only th
 | `publishToDefectDojo` | Uploads all scan reports to DefectDojo at Stage 11 — before the K8s manifest update so findings are always captured. Supports Trivy, OWASP, npm audit, Gitleaks, govulncheck. Skips missing files — safe for all project types. |
 | `updateK8sManifest` | Clones manifest repo, pre-flight verifies files exist (pauses pipeline + emails team if missing), updates image tags, verifies update, commits & pushes. Never silently succeeds. |
 | `k8sManifestScanAndUpdate` | Same as above **plus** OPA Conftest scan of updated manifests before push. Recommended for production. |
+| `productionApproval` | Production deploy gate for `prod` branch. Sends approval email with Approve/Reject button, pauses pipeline, then updates manifest with **release version** (from `VERSION` file) on approval. Sends separate emails on rejection and timeout. |
 | `sonarSast` | SonarQube analysis with optional quality gate wait. `projectKey`/`projectName` default to `IMAGE_NAME`/`PROJECT_NAME`. |
 | `checkoutAndGitInfo` | Standardized checkout with repo, branch, and credentials params. |
 | `detectBuildTrigger` | Returns human-readable trigger string (SCM poll, manual, timer, etc.) for notifications. |
@@ -226,6 +229,103 @@ If a file is missing:
 ```groovy
 K8S_MANIFEST_PATHS = '03-deployment.yaml,06-ingress.yaml'
 ```
+
+---
+
+## Production Approval (prod branch)
+
+### How it works
+
+When a developer pushes or merges to the `prod` branch, the regular build and scan stages run as normal. Then instead of automatically updating the manifest, the pipeline:
+
+1. **Sends an approval email** to `NOTIFICATION_EMAIL` with an **Approve / Reject** button
+2. **Pauses** and waits up to 30 minutes for a human decision
+3. On **Approve** → updates the K8s manifest with the release version (e.g. `1.2.0`)
+4. On **Reject** → sends a rejection email and fails the build
+5. On **Timeout** → sends a timeout email and aborts
+
+### Branch setup
+
+| Branch | Manifest update | Image tag |
+|:-------|:----------------|:----------|
+| `main` / any other | Automatic | Build number (e.g. `1.0.42`) |
+| `prod` | After human approval | Release version (e.g. `1.2.0`) |
+
+### The VERSION file
+
+The pipeline reads the release version from a `VERSION` file in the **root of your application repo**. This is how you tell the pipeline what version number to stamp on the image.
+
+**Create it once:**
+```
+# in your application repo root
+echo "1.0.0" > VERSION
+git add VERSION
+git commit -m "chore: add VERSION file"
+```
+
+**Bump it before every production release:**
+```
+echo "1.2.0" > VERSION
+git add VERSION
+git commit -m "chore: release 1.2.0"
+git push origin prod
+```
+
+The pipeline reads the file and tags the image as `harbor.../image:1.2.0`. The manifest repo gets updated with `image: harbor.../image:1.2.0`.
+
+If no `VERSION` file exists the pipeline falls back to `APP_VERSION` (`1.0.<build_number>`).
+
+### Add to your Jenkinsfile
+
+**Step 1** — add `RELEASE_VERSION` to the `environment{}` block:
+
+```groovy
+// Auto-populated — do not edit
+GIT_COMMIT      = sh(script: 'git rev-parse HEAD 2>/dev/null || echo unknown', returnStdout: true).trim()
+GIT_AUTHOR      = sh(script: 'git log -1 --pretty=format:"%an" 2>/dev/null || echo unknown', returnStdout: true).trim()
+APP_VERSION     = "1.0.${env.BUILD_NUMBER}"
+BUILD_DATE_UTC  = sh(script: "date -u +'%Y-%m-%dT%H:%M:%SZ'", returnStdout: true).trim()
+// Reads VERSION file from repo root; falls back to APP_VERSION if not present.
+RELEASE_VERSION = sh(script: "cat VERSION 2>/dev/null || echo ${env.APP_VERSION}", returnStdout: true).trim()
+```
+
+**Step 2** — replace the single `k8s Manifest Update` stage with these two:
+
+```groovy
+// ── Production gate (prod branch only) ───────────────────────────────
+// Emails team, waits for approval, then updates manifest with RELEASE_VERSION.
+stage('Production Approval') {
+    when { branch 'prod' }
+    steps {
+        script {
+            productionApproval(
+                releaseVersion: env.RELEASE_VERSION,
+                recipients:     env.NOTIFICATION_EMAIL,
+                timeoutMinutes: 30
+            )
+        }
+    }
+}
+
+// ── Regular manifest update (all branches except prod) ────────────────
+// On prod, productionApproval() handles the manifest update above.
+stage('k8s Manifest Update') {
+    when { not { branch 'prod' } }
+    steps {
+        script {
+            k8sManifestScanAndUpdate()
+        }
+    }
+}
+```
+
+### Emails sent
+
+| Event | Subject line |
+|:------|:-------------|
+| Waiting for approval | `⏳ [Approval Required] <image> v<version> → PRODUCTION` |
+| Rejected by user | `❌ [Rejected] <image> v<version> production deploy cancelled` |
+| Nobody approved in time | `⏰ [Timed Out] <image> v<version> production deploy aborted` |
 
 ---
 
@@ -420,6 +520,7 @@ Both tools work together — DefectDojo handles what was found in this build; De
 | `DEFECTDOJO_ENGAGEMENT_ID` | DefectDojo engagement ID (unique per service) | Yes |
 | `DEPENDENCY_TRACK_URL` | Dependency-Track base URL | Yes |
 | `STAGING_URL` | Live staging URL of this service on K8s (e.g. `https://my-service.staging.k8s.softnethq.co.tz`) | No — skip DAST if omitted |
+| `RELEASE_VERSION` | Release version tag used on `prod` branch (reads from `VERSION` file in repo root) | No — auto-populated |
 
 ### Auto-populated (do not edit)
 
@@ -430,6 +531,7 @@ Both tools work together — DefectDojo handles what was found in this build; De
 | `APP_VERSION` | `1.0.${env.BUILD_NUMBER}` |
 | `BUILD_DATE_UTC` | ISO-8601 UTC timestamp |
 | `FINAL_IMAGE_NAME` | Set by `buildDockerImageAndPush` — used by `generateSbom` and `vulnScanApplicationImage` |
+| `RELEASE_VERSION` | Read from `VERSION` file in repo root; falls back to `APP_VERSION` if file absent |
 
 ---
 
@@ -561,6 +663,6 @@ Services without a staging URL skip DAST automatically — no error, no change n
 
 ---
 
-**Last Updated**: 2026-05-30
-**Library Version**: 5.1
+**Last Updated**: 2026-06-03
+**Library Version**: 5.2
 **Maintained by**: DevOps Engineering Team — softnethq.co.tz

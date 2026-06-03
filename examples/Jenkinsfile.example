@@ -16,7 +16,8 @@
  *   7.  Vuln Scan - Dockerfile    (Trivy base image + OPA Dockerfile + Gitleaks)
  *   8.  Docker Build & Push       (Harbor, removes local images after push)
  *   9.  Vuln Scan - App Image     (Trivy full image + OPA K8s manifests)
- *   10. K8s Manifest Update       (pause on missing file, never silently succeed)
+ *   10. Production Approval       (prod branch only — email gate, uses VERSION file)
+ *   11. K8s Manifest Update       (non-prod branches — auto update with build number)
  *
  * DISK MANAGEMENT:
  *   - buildDiscarder: last 5 builds, 0 archived artifacts
@@ -118,6 +119,12 @@ pipeline {
         GIT_AUTHOR     = sh(script: 'git log -1 --pretty=format:"%an" 2>/dev/null || echo unknown', returnStdout: true).trim()
         APP_VERSION    = "1.0.${env.BUILD_NUMBER}"
         BUILD_DATE_UTC = sh(script: "date -u +'%Y-%m-%dT%H:%M:%SZ'", returnStdout: true).trim()
+
+        // Release version for production deploys (prod branch only).
+        // Create a VERSION file in your repo root containing the semver string,
+        // e.g.  echo "1.2.0" > VERSION  — bump it before each prod release.
+        // Falls back to APP_VERSION (1.0.<build_number>) if VERSION file is absent.
+        RELEASE_VERSION = sh(script: "cat VERSION 2>/dev/null || echo ${env.APP_VERSION}", returnStdout: true).trim()
     }
     // =========================================================================
     // ↑↑↑ END OF PER-PROJECT SECTION ↑↑↑
@@ -257,22 +264,43 @@ pipeline {
             }
         }
 
-        // ── 10. K8S MANIFEST UPDATE ───────────────────────────────────────────
+        // ── 10. PRODUCTION APPROVAL (prod branch only) ───────────────────────
+        // Triggered only when pushing to the 'prod' branch.
+        // 1. Sends an approval email with Approve / Reject button
+        // 2. Pauses the pipeline for up to 30 minutes
+        // 3. On Approve → updates manifest with RELEASE_VERSION (from VERSION file)
+        // 4. On Reject  → sends rejection email, fails build
+        // 5. On Timeout → sends timeout email, aborts build
+        //
+        // Before pushing to prod, bump the VERSION file:
+        //   echo "1.2.0" > VERSION && git add VERSION && git commit -m "chore: release 1.2.0"
+        stage('Production Approval') {
+            when { branch 'prod' }
+            steps {
+                script {
+                    productionApproval(
+                        releaseVersion: env.RELEASE_VERSION,
+                        recipients:     env.NOTIFICATION_EMAIL,
+                        timeoutMinutes: 30
+                    )
+                }
+            }
+        }
+
+        // ── 11. K8S MANIFEST UPDATE (non-prod branches) ───────────────────────
+        // Skipped on 'prod' — productionApproval() handles the manifest update there.
+        //
         // Two options — choose ONE:
-        //
-        // Option A: updateK8sManifest()
-        //   → update image tag only, no OPA scan
-        //
-        // Option B: k8sManifestScanAndUpdate()  ← RECOMMENDED
-        //   → update image tag + OPA policy scan → only pushes if scan passes
-        //   → prevents non-compliant manifests reaching the k8s repo
+        //   k8sManifestScanAndUpdate()  ← RECOMMENDED (update + OPA scan before push)
+        //   updateK8sManifest()          → update only, no OPA scan
         //
         // BOTH OPTIONS:
         //   - Pre-flight verifies files exist before changes
         //   - Missing file → warning email + 30min pause → auto-fail
-        //   - Image update verified before commit
+        //   - Image tag verified before commit
         //   - NEVER silently succeeds
         stage('k8s Manifest Update') {
+            when { not { branch 'prod' } }
             steps {
                 script {
                     k8sManifestScanAndUpdate()   // recommended: update + OPA scan

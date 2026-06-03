@@ -10,10 +10,11 @@ This document provides exhaustive documentation for all shared library functions
 2. [buildDockerImageAndPush](#builddockerimageandpush)
 3. [updateK8sManifest](#updatek8smanifest)
 4. [k8sManifestScanAndUpdate](#k8smanifestscanandupdate)
-5. [sonarSast](#sonarsast)
-6. [vulnScanDocker](#vulnscandocker)
-7. [checkoutAndGitInfo](#checkoutandgitinfo)
-8. [Notification Functions](#notification-functions)
+5. [productionApproval](#productionapproval)
+6. [sonarSast](#sonarsast)
+7. [vulnScanDocker](#vulnscandocker)
+8. [checkoutAndGitInfo](#checkoutandgitinfo)
+9. [Notification Functions](#notification-functions)
 
 ---
 
@@ -106,6 +107,104 @@ Inherits all parameters from `updateK8sManifest`.
 
 ---
 
+## productionApproval
+
+**File**: `vars/productionApproval.groovy`
+
+### Purpose
+Production deploy gate for a `prod` branch workflow. Sends a rich HTML approval email to the team with **Approve / Reject** buttons, pauses the pipeline waiting for a human decision, then on approval calls `k8sManifestScanAndUpdate()` using a **release version tag** (e.g. `1.2.0`) instead of the build number. Handles rejection and timeout with separate notification emails.
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `releaseVersion` | String | `env.RELEASE_VERSION` | **Required.** Semantic version to stamp on the image, e.g. `1.2.0` or `v1.2.0`. Leading `v` is stripped automatically for the image tag. |
+| `recipients` | String | `env.NOTIFICATION_EMAIL` | Email address(es) to notify — comma-separated for multiple. |
+| `timeoutMinutes` | Integer | `30` | Minutes to wait for approval before auto-abort. |
+| `approverMessage` | String | Auto-generated | Custom message shown on the Jenkins input prompt. |
+| `skipManifest` | Boolean | `false` | Set `true` to send the email and gate only, without updating the manifest (useful for testing). |
+
+### How the release version is resolved
+
+Add a `VERSION` file to your repo root containing the semver string (e.g. `1.2.0`). The Jenkinsfile reads it automatically:
+
+```
+# repo root
+echo "1.2.0" > VERSION
+git add VERSION && git commit -m "chore: bump version to 1.2.0"
+git push origin prod
+```
+
+If no `VERSION` file exists it falls back to `APP_VERSION` (`1.0.<build_number>`).
+
+### Jenkinsfile usage
+
+Add these two stages to replace the single `k8s Manifest Update` stage:
+
+```groovy
+// ── Production gate (prod branch only) ───────────────────────────────
+stage('Production Approval') {
+    when { branch 'prod' }
+    steps {
+        script {
+            productionApproval(
+                releaseVersion: env.RELEASE_VERSION,
+                recipients:     env.NOTIFICATION_EMAIL,
+                timeoutMinutes: 30
+            )
+        }
+    }
+}
+
+// ── Regular manifest update (all branches except prod) ────────────────
+stage('k8s Manifest Update') {
+    when { not { branch 'prod' } }
+    steps {
+        script {
+            k8sManifestScanAndUpdate()
+        }
+    }
+}
+```
+
+Also add to the `environment` block:
+
+```groovy
+// Reads VERSION file from repo root; falls back to APP_VERSION.
+RELEASE_VERSION = sh(script: "cat VERSION 2>/dev/null || echo ${env.APP_VERSION}", returnStdout: true).trim()
+```
+
+### Workflow diagram
+
+```
+prod branch push
+       │
+       ▼
+  Build & scan (same as main)
+       │
+       ▼
+  ┌─ productionApproval() ─────────────────────────────┐
+  │  1. Sends approval email with Approve/Reject button │
+  │  2. Pauses pipeline (up to 30 min)                  │
+  │  3a. Approved → k8sManifestScanAndUpdate(v1.2.0)    │
+  │  3b. Rejected → sends rejection email, FAILURE      │
+  │  3c. Timeout  → sends timeout email, ABORTED        │
+  └─────────────────────────────────────────────────────┘
+       │
+       ▼
+  Manifest updated with harbor.../image:1.2.0
+```
+
+### Emails sent
+
+| Event | Subject |
+| :--- | :--- |
+| Approval request | `⏳ [Approval Required] <image> v<tag> → PRODUCTION` |
+| Rejected | `❌ [Rejected] <image> v<tag> production deploy cancelled` |
+| Timed out | `⏰ [Timed Out] <image> v<tag> production deploy aborted` |
+
+---
+
 ## sonarSast
 
 **File**: `vars/sonarSast.groovy`
@@ -158,5 +257,5 @@ These functions send rich HTML emails to the recipients defined in `env.NOTIFICA
 
 ---
 
-**Last Updated**: 2026-04-22  
-**Documentation Version**: 2.0
+**Last Updated**: 2026-06-03  
+**Documentation Version**: 2.1
