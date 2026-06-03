@@ -35,8 +35,13 @@ def call(Map params = [:]) {
 
     def repoUrl            = params.repoUrl         ?: env.K8S_MANIFEST_REPO_URL         ?: error("K8S_MANIFEST_REPO_URL is required")
     def manifestPath       = params.manifestPath    ?: env.K8S_MANIFEST_PATHS             ?: 'deployment.yaml'
-    def branch             = params.branch          ?: env.K8S_MANIFEST_BRANCH            ?: 'main'
     def credentialsId      = params.credentialsId   ?: env.K8S_MANIFEST_CREDENTIALS_ID   ?: error("K8S_MANIFEST_CREDENTIALS_ID is required")
+
+    // Map app branch → manifest repo branch.
+    // dev/main → K8S_MANIFEST_BRANCH (default: dev)
+    // uat      → K8S_MANIFEST_UAT_BRANCH  (default: uat)
+    // prod     → K8S_MANIFEST_PROD_BRANCH (default: prod)
+    def branch = params.branch ?: resolveManifestBranch(env.BRANCH_NAME)
     def imageName          = params.imageName       ?: env.IMAGE_NAME                     ?: error("IMAGE_NAME is required")
     def imageTag           = params.imageTag        ?: env.BUILD_NUMBER                   ?: 'latest'
     def registryUrl        = params.registryUrl     ?: env.REGISTRY_URL                  ?: 'docker.io'
@@ -76,14 +81,13 @@ def call(Map params = [:]) {
             passwordVariable: 'GIT_PASSWORD'
         )]) {
             def repoInfo = getRepoInfo(repoUrl)
-            if (repoInfo.protocol == 'https') {
-                sh """
-                    git clone --depth 1 --branch ${branch} https://\${GIT_USERNAME}:\${GIT_PASSWORD}@${repoInfo.domain} ${tempDir} ||
-                    (git -c http.sslVerify=false clone --depth 1 --branch ${branch} https://\${GIT_USERNAME}:\${GIT_PASSWORD}@${repoInfo.domain} ${tempDir})
-                """
-            } else {
-                sh "git clone --depth 1 --branch ${branch} http://\${GIT_USERNAME}:\${GIT_PASSWORD}@${repoInfo.domain} ${tempDir}"
-            }
+            def baseUrl  = "${repoInfo.protocol}://\${GIT_USERNAME}:\${GIT_PASSWORD}@${repoInfo.domain}"
+            // Try target branch first; fall back to main so the first prod push
+            // creates the prod branch rather than failing.
+            sh """
+                git clone --depth 1 --branch ${branch} ${baseUrl} ${tempDir} 2>/dev/null || \
+                git clone --depth 1 --branch main      ${baseUrl} ${tempDir}
+            """
         }
 
         // ── PRE-FLIGHT CHECK ──────────────────────────────────────────────────
@@ -250,6 +254,14 @@ def sendManifestWarningNotification(Map params) {
         )
     } catch (Exception e) {
         echo "⚠️  Warning email failed: ${e.getMessage()}"
+    }
+}
+
+def resolveManifestBranch(String appBranch) {
+    switch (appBranch) {
+        case 'prod': return env.K8S_MANIFEST_PROD_BRANCH ?: 'prod'
+        case 'uat':  return env.K8S_MANIFEST_UAT_BRANCH  ?: 'uat'
+        default:     return env.K8S_MANIFEST_BRANCH       ?: 'dev'
     }
 }
 
