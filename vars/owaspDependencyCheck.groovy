@@ -155,10 +155,15 @@ def scanNpm(Map params, int failOnCVSS) {
 // -----------------------------------------------------------------------------
 def scanGo(Map params, int failOnCVSS) {
     echo "🔍 govulncheck — Go module vulnerability scan"
+    // Run inside the same builder image used in the Dockerfile (golang:1.24-alpine)
+    // so govulncheck checks against Go 1.24 stdlib — not the host Go 1.22.2.
     sh """
-        export PATH=\$PATH:\$(go env GOPATH)/bin
-        which govulncheck 2>/dev/null || go install golang.org/x/vuln/cmd/govulncheck@latest
-        govulncheck ./... 2>&1 | tee govulncheck-report.txt || true
+        docker run --rm \\
+            -v "\$(pwd)":/workspace \\
+            -w /workspace \\
+            golang:1.24-alpine \\
+            sh -c 'go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...' \\
+            2>&1 | tee govulncheck-report.txt || true
     """
     archiveArtifacts artifacts: 'govulncheck-report.txt', allowEmptyArchive: true
 
