@@ -162,15 +162,18 @@ def scanGo(Map params, int failOnCVSS) {
             -v "\$(pwd)":/workspace \\
             -w /workspace \\
             golang:1.24-alpine \\
-            sh -c 'go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...' \\
+            sh -c 'go install golang.org/x/vuln/cmd/govulncheck@v1.1.4 && govulncheck ./...' \\
             2>&1 | tee govulncheck-report.txt || true
     """
     archiveArtifacts artifacts: 'govulncheck-report.txt', allowEmptyArchive: true
 
-    def vulnCount = sh(
-        script: "grep -c 'Vulnerability #' govulncheck-report.txt 2>/dev/null || echo 0",
+    // grep -c exits 1 when count is 0 (but still prints "0") — use || true not || echo 0
+    // to avoid capturing "0\n0" which breaks toInteger()
+    def vulnRaw = sh(
+        script: "grep -c 'Vulnerability #' govulncheck-report.txt 2>/dev/null || true",
         returnStdout: true
-    ).trim().toInteger()
+    ).trim()
+    def vulnCount = vulnRaw.isInteger() ? vulnRaw.toInteger() : 0
 
     if (vulnCount > 0) {
         echo "⚠️  ${vulnCount} Go vulnerability/vulnerabilities — check govulncheck-report.txt"
