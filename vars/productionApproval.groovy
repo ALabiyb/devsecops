@@ -81,18 +81,33 @@ def call(Map params = [:]) {
     }
 
     // ── 2. WAIT FOR HUMAN APPROVAL ────────────────────────────────────────────
+    // Approver must type the version to confirm — prevents accidental deploys
+    // and creates an explicit audit record of which version was signed off.
     def approved = false
     try {
         timeout(time: timeoutMinutes, unit: 'MINUTES') {
-            input(
-                message: approverMessage,
-                ok:      '✅ Approve & Deploy to Production'
+            def response = input(
+                message:     approverMessage,
+                ok:          '✅ Approve & Deploy to Production',
+                parameters:  [
+                    string(
+                        name:         'CONFIRM_VERSION',
+                        defaultValue: '',
+                        description:  "Type the version to confirm deployment (expected: ${imageTag})"
+                    )
+                ]
             )
+            def confirmed = (response instanceof Map ? response['CONFIRM_VERSION'] : response)?.trim()
+            if (confirmed != imageTag) {
+                env.failedStage  = "Production Approval"
+                env.failedReason = "Version mismatch — entered '${confirmed}', expected '${imageTag}'"
+                error "❌ Version mismatch: you entered '${confirmed}' but the release is '${imageTag}'. Deployment cancelled."
+            }
         }
         approved = true
-        echo "✅ Production deployment approved"
+        echo "✅ Production deployment approved for version ${imageTag}"
     } catch (org.jenkinsci.plugins.workflow.steps.FlowInterruptedException e) {
-        // Distinguish timeout (Timeout) from manual abort/reject
+        // Distinguish timeout from manual abort/reject
         def cause = e.causes?.find { it instanceof org.jenkinsci.plugins.workflow.support.steps.input.Rejection }
         if (cause) {
             sendRejectionEmail(recipients, finalImage, imageTag, cause.user?.toString() ?: 'Unknown')
@@ -166,11 +181,11 @@ private String buildApprovalEmail(String finalImage, String imageTag, int timeou
     </div>
 
     <p style="margin-bottom:20px">
-      Click <strong>Approve</strong> to proceed with the production deployment,
-      or <strong>Reject</strong> to cancel it.
+      Click the link below, <strong>type <code style="background:#fef9c3;padding:2px 6px;border-radius:4px">${imageTag}</code> in the confirmation box</strong>,
+      then click Approve to deploy — or Reject to cancel.
     </p>
 
-    <a href="${env.BUILD_URL}input" class="approve-btn">✅ Approve &amp; Deploy</a>
+    <a href="${env.BUILD_URL}input" class="approve-btn">✅ Review &amp; Approve</a>
     <a href="${env.BUILD_URL}input" class="reject-btn">❌ Reject</a>
 
     <p class="footer">
