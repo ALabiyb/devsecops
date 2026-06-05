@@ -338,6 +338,15 @@ pipeline {
             }
         }
 
+        unstable {
+            script {
+                sendSuccessNotification(
+                    recipients: env.NOTIFICATION_EMAIL,
+                    triggeredBy: detectBuildTrigger()
+                )
+            }
+        }
+        
         failure {
             script {
                 sendFailureNotification(
