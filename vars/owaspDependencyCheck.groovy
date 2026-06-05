@@ -184,7 +184,7 @@ def scanGo(Map params, int failOnCVSS) {
         } else {
             currentBuild.result = 'UNSTABLE'
         }
-    } else {
+    } else {ls
         echo "✅ govulncheck: no vulnerabilities found"
     }
     return [success: true, reportPath: 'govulncheck-report.txt']
